@@ -158,6 +158,16 @@ MIGRATIONS = [
     ("accounts", "display_name", "ALTER TABLE accounts ADD COLUMN display_name TEXT"),
     ("accounts", "avatar_url", "ALTER TABLE accounts ADD COLUMN avatar_url TEXT"),
     ("accounts", "last_seen_at", "ALTER TABLE accounts ADD COLUMN last_seen_at REAL"),
+    # WHICH METHODOLOGY PRODUCED THIS RESULT. Stored as the full stamp, not just the
+    # integer, because slippage basis and margin calibration date move independently of
+    # the version -- see engine/methodology.py. Rows written before this migration keep
+    # NULL, which is the honest answer: they pre-date the stamp and cannot be attributed.
+    ("results", "methodology_json", "ALTER TABLE results ADD COLUMN methodology_json TEXT"),
+    # On the book it is the integer that matters: it is already inside spec_hash, so it
+    # never merges two methodologies into one row. The column is here so a row can be
+    # displayed and filtered without parsing the spec.
+    ("strategy_book", "methodology_version",
+     "ALTER TABLE strategy_book ADD COLUMN methodology_version INTEGER"),
 ]
 
 # Indexes that depend on a migrated column. They cannot live in SCHEMA: executescript runs
@@ -435,7 +445,8 @@ BOOK_COLUMNS = (
     "n_trades", "pnl_rupees", "mean_rom", "sharpe", "profit_factor",
     "max_drawdown_rupees", "peak_margin_points", "health_score", "verdict",
     "deflated_sharpe", "oos_held_up", "folds_profitable", "folds_total",
-    "worst_fold_rupees", "median_fold_rupees", "qualified_json")
+    "worst_fold_rupees", "median_fold_rupees", "qualified_json",
+    "methodology_version")
 
 
 def record_strategy(entry, now=None):
@@ -663,15 +674,17 @@ def active_slots(account_id):
 
 # ---------------------------------------------------------------- results
 
-def save_result(key_id, spec_json, spec_hash, payload_json, now=None):
+def save_result(key_id, spec_json, spec_hash, payload_json, now=None,
+                methodology_json=None):
     backtest_id = "bt_" + secrets.token_hex(10)
     token = secrets.token_urlsafe(24)
     con = connect()
     with con:
         con.execute("INSERT INTO results (backtest_id, key_id, created_at, spec_json, "
-                    "spec_hash, payload_json, report_token) VALUES (?,?,?,?,?,?,?)",
+                    "spec_hash, payload_json, report_token, methodology_json) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
                     (backtest_id, key_id, now if now is not None else time.time(),
-                     spec_json, spec_hash, payload_json, token))
+                     spec_json, spec_hash, payload_json, token, methodology_json))
     con.close()
     return backtest_id, token
 

@@ -77,6 +77,13 @@ docs/        Internal design record, frozen at the dates in each header.
 vendor/      Runtime inputs the engine loads but does not ship. Read vendor/README.md.
 ```
 
+## Contributing
+
+The most useful contribution is checking the arithmetic — a wrong number that looks
+plausible is the failure that matters here. [CONTRIBUTING.md](CONTRIBUTING.md) covers
+setup, house style, and the one rule that is not optional: if a change makes an unchanged
+spec return different numbers, the methodology version gets bumped.
+
 ## Running it
 
 You need a ClickHouse instance holding options data in the schema under `data/schema/`.

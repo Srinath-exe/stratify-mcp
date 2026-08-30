@@ -1,0 +1,105 @@
+# Three suites, three jobs, because they fail for unrelated reasons and a single job
+# would hide the second failure behind the first.
+#
+# WHAT CI CANNOT RUN. 208 of the 527 tests need a populated ClickHouse, which no runner
+# has -- the data is the one thing this repository does not ship. The root conftest.py
+# turns those into SKIPS with a reason, and only when the database is confirmed
+# unreachable, so a genuine failure on a machine that has one still fails. `-rs` prints
+# every skip reason, so the log says what was not attempted rather than implying a clean
+# run. The full suite runs against the real database before a release; see CONTRIBUTING.md.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A second push to the same branch makes the first run's answer irrelevant.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: engine + server (no database)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"        # the version the image and the box both run
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Test
+        # No database here, so expect ~319 passed and ~208 skipped. A FAILURE is real.
+        run: python -m pytest engine/tests server/tests -q -rs
+        env:
+          STRATIFY_KEY_PEPPER: ci-pepper-not-a-real-secret
+          STRATIFY_SERVICE_DB: ${{ runner.temp }}/ci-service.sqlite
+          STRATIFY_INCUMBENT_ROOT: /nonexistent
+
+  npm:
+    name: npm client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/stratify-npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: packages/stratify-npm/package-lock.json
+
+      - run: npm ci
+      - run: npm test
+
+      - name: The tarball must not carry tests
+        # This regressed once: tsconfig compiled src and test into one dist/ and
+        # `files: ["dist"]` shipped 11 kB of test code to every install. A packing dry-run
+        # is the only thing that checks what users actually receive.
+        run: |
+          npm pack --dry-run --json > /tmp/pack.json
+          if grep -q '"path": *"dist-test/' /tmp/pack.json || grep -q '\.test\.js' /tmp/pack.json; then
+            echo "::error::test files are in the published tarball"
+            cat /tmp/pack.json
+            exit 1
+          fi
+
+  python-client:
+    name: python client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/stratify-py
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest tests -q
+
+      - name: Build sdist and wheel
+        # Built on every PR, not only at release: a packaging error that only appears at
+        # publish time appears when it is most expensive to fix.
+        run: |
+          pip install build twine
+          python -m build
+          twine check dist/*

@@ -1,0 +1,23 @@
+name: Feature request
+description: Something the engine cannot express yet
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: strategy
+    attributes:
+      label: The strategy you cannot express
+      description: |
+        Describe it the way you would to another trader. Concrete beats abstract — "only
+        enter when India VIX is above 15" is actionable; "more conditions" is not.
+    validations: {required: true}
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What you tried
+      description: The spec you wrote and how it was refused.
+      render: json
+  - type: textarea
+    id: matters
+    attributes:
+      label: Why it matters
+      description: What question would this let you answer that you cannot answer today?

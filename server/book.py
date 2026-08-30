@@ -26,6 +26,7 @@ what anybody should trade.
 """
 import json
 import statistics
+from engine import methodology
 
 MIN_TRADES = 30
 MIN_HEALTH = 50
@@ -83,6 +84,9 @@ def entry_for(account_id, backtest_id, spec_hash, raw_spec, summary, panel, chec
         "account_id": account_id,
         "backtest_id": backtest_id,
         "spec_hash": spec_hash,
+        # Already inside spec_hash, so it can never merge two methodologies into one row.
+        # Stored separately so a row can be shown and filtered without parsing the spec.
+        "methodology_version": methodology.VERSION,
         "structure": summary.get("structure") or raw_spec.get("structure") or "",
         "cadence": raw_spec.get("cadence") or "weekly",
         "spec_json": json.dumps(raw_spec, default=str),

@@ -1,0 +1,36 @@
+name: Bug report
+description: Something is broken that is not a wrong number
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a result you believe is miscalculated, use **A result looks wrong** instead.
+        For anything that lets a caller read data, escalate a tier, or reach another
+        account's records, do NOT file here — see SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+    validations: {required: true}
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Smallest sequence that shows it.
+    validations: {required: true}
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: Hosted service or self-hosted? Client and version? Python or Node version?
+      placeholder: "hosted · stratify-mcp 0.1.0 (npm) · node 20.11"
+    validations: {required: true}
+  - type: textarea
+    id: tests
+    attributes:
+      label: Test output (self-hosted only)
+      description: |
+        `python -m pytest engine/tests server/tests -q -rs`. Skips are expected without a
+        database — around 208 of them. Failures are not.
+      render: shell

@@ -1,0 +1,33 @@
+# Weekly, grouped, and deliberately quiet.
+#
+# The point is the SECURITY updates. Ungrouped version bumps across four ecosystems
+# produce enough noise that people stop reading them, which is how the one that mattered
+# gets merged unread or ignored.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly}
+    groups:
+      actions: {patterns: ["*"]}
+
+  - package-ecosystem: pip
+    directory: /
+    schedule: {interval: weekly}
+    # requirements.txt is pinned to what the backend was benchmarked against; a bump here
+    # needs the full suite against a real database, not just CI.
+    open-pull-requests-limit: 5
+    groups:
+      python: {patterns: ["*"]}
+
+  - package-ecosystem: npm
+    directory: /packages/stratify-npm
+    schedule: {interval: weekly}
+    groups:
+      npm: {patterns: ["*"]}
+
+  - package-ecosystem: pip
+    directory: /packages/stratify-py
+    schedule: {interval: weekly}
+    groups:
+      client: {patterns: ["*"]}

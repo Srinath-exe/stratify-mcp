@@ -1,0 +1,39 @@
+name: A result looks wrong
+description: A backtest returned a number you believe is incorrect
+labels: ["correctness"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most valuable kind of report here. A wrong number that looks plausible
+        is the failure this project most needs to catch.
+
+        **Before filing:** compare the `methodology` stamp on your result with the current
+        one from `describe_coverage`. If the version differs, the maths changed on purpose —
+        `explain_methodology("changelog")` says what and whether it moves numbers. Still
+        file if you think the change is wrong.
+  - type: textarea
+    id: spec
+    attributes:
+      label: The strategy spec
+      description: The exact `spec` you sent. Redact nothing — it is the whole repro.
+      render: json
+    validations: {required: true}
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and why
+      description: A hand calculation, another tool's answer, or a live fill to compare against.
+    validations: {required: true}
+  - type: textarea
+    id: got
+    attributes:
+      label: What you got
+      description: Paste the summary and the honesty panel.
+    validations: {required: true}
+  - type: input
+    id: methodology
+    attributes:
+      label: Methodology stamp
+      description: The `methodology` object from your result.
+      placeholder: '{"version": 1, "slippage_basis": "...", "margin_calibrated_at": "..."}'

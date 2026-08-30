@@ -279,7 +279,37 @@ def interpretation(summary, panel, spec=None):
 # ----------------------------------------------------------------------------- topics
 # Reachable via explain_methodology(topic=...) and as MCP resources.
 
+from engine import methodology as _methodology
+
+
+def _render_changelog():
+    """The changelog as text, newest first. Built from engine/methodology.py so there is
+    one source of truth: a changelog maintained separately from the version it describes
+    is a changelog that goes stale."""
+    out = []
+    for e in _methodology.CHANGELOG:
+        head = f"v{e['version']}" if e["version"] is not None else "(before versioning)"
+        moved = "CHANGES NUMBERS" if e["affects_results"] else "no effect on numbers"
+        out.append(f"{head} · {e['date']} · {moved}\n  {e['summary']}")
+        out.extend(f"    - {c}" for c in e["changes"])
+    return "\n".join(out)
+
+
 TOPICS = {
+    "changelog": (
+        "WHY THIS TOPIC EXISTS. A backtest reproduces only against a fixed methodology. "
+        "When the cost model, margin, slippage or exit resolution improves, the same spec "
+        "returns a different number -- correctly, but a figure you recorded earlier will "
+        "no longer reproduce. Every result carries a `methodology` stamp saying which "
+        "model produced it, so the difference is attributable instead of mysterious.\n\n"
+        "The stamp has three parts, because two of them move WITHOUT a code change:\n"
+        "  version              bumped only when output could change for an unchanged spec\n"
+        "  slippage_basis       switches from assumed to measured once the live book "
+        "holds 30 fills\n"
+        "  margin_calibrated_at the date the broker SPAN ratio behind naked margin was "
+        "measured\n\n"
+        "If a user shows you an old number that does not reproduce, compare the stamps "
+        "before concluding anything is broken.\n\n" + _render_changelog()),
     "overview": (
         "A CYCLE is one opened position. Which sessions produce one is set by `cadence`.\n\n"
         "cadence 'weekly' (the default): one cycle per expiry, on the trading day matching "

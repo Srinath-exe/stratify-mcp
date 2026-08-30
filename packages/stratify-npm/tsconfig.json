@@ -1,16 +1,23 @@
 {
+  "//": [
+    "SHIPPING BUILD. src only, so the tarball carries no tests -- the previous config",
+    "compiled src and test together into dist/, `files: [dist]` swept both up, and every",
+    "install of this package pulled down 11 kB of test code it can never run.",
+    "rootDir 'src' also flattens the output: dist/client.js, not dist/src/client.js.",
+    "Tests build separately via tsconfig.test.json."
+  ],
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022", "DOM"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "outDir": "dist",
-    "rootDir": ".",
+    "rootDir": "src",
     "declaration": true,
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts"]
 }

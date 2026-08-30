@@ -1,0 +1,10 @@
+{
+  "//": "Tests, built to their own directory so they cannot end up in the tarball.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist-test",
+    "rootDir": ".",
+    "declaration": false
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

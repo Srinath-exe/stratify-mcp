@@ -1,0 +1,141 @@
+# Publish both clients from one tag.
+#
+# WHY CI AND NOT A LAPTOP. `npx stratify-mcp` runs on other people's machines, so publish
+# rights are the most dangerous credential this project has -- a compromise of whatever
+# holds them is a supply-chain compromise of every user. They live here, in an
+# environment that exists for eight minutes and is destroyed, rather than on the
+# internet-facing box that runs the service.
+#
+# PyPI needs no token at all: trusted publishing exchanges this workflow's OIDC identity
+# for a short-lived credential, and PyPI checks the repository, workflow filename and
+# environment against what was registered. npm still uses NPM_TOKEN.
+#
+# Tests run first and the publish depends on them, so a tag cannot ship a red build.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and check, but do not publish"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Tests must pass first
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+
+      - name: Server and engine
+        run: python -m pytest engine/tests server/tests -q -rs
+        env:
+          STRATIFY_KEY_PEPPER: ci-pepper-not-a-real-secret
+          STRATIFY_SERVICE_DB: ${{ runner.temp }}/release-service.sqlite
+          STRATIFY_INCUMBENT_ROOT: /nonexistent
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: packages/stratify-npm/package-lock.json
+
+      - name: npm client
+        working-directory: packages/stratify-npm
+        run: npm ci && npm test
+
+      - name: Python client
+        working-directory: packages/stratify-py
+        run: pip install -e ".[dev]" && python -m pytest tests -q
+
+      - name: The tag must match the package versions
+        # A tag that disagrees with package.json publishes a version nobody can find from
+        # the repository. Checked before anything is pushed anywhere, not after.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          NPM=$(node -p "require('./packages/stratify-npm/package.json').version")
+          PY=$(grep -m1 '^version' packages/stratify-py/pyproject.toml | cut -d'"' -f2)
+          echo "tag=$TAG npm=$NPM pypi=$PY"
+          [ "$TAG" = "$NPM" ] || { echo "::error::tag $TAG != npm $NPM"; exit 1; }
+          [ "$TAG" = "$PY" ]  || { echo "::error::tag $TAG != pypi $PY"; exit 1; }
+
+  npm:
+    name: Publish to npm
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write        # provenance: links the tarball to this commit and workflow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: packages/stratify-npm/package-lock.json
+
+      - working-directory: packages/stratify-npm
+        run: npm ci
+
+      - name: Publish
+        working-directory: packages/stratify-npm
+        # --provenance publishes a signed attestation tying this tarball to this commit and
+        # this workflow, so anyone can verify the published bytes came from this source
+        # rather than from someone's shell. It REQUIRES A PUBLIC REPOSITORY -- the
+        # attestation is only meaningful if the source it points at can be read -- so it is
+        # applied conditionally rather than failing the release while the repo is private.
+        run: |
+          if [ "${{ github.event.repository.private }}" = "true" ]; then
+            echo "::warning::repository is private -- publishing WITHOUT provenance"
+            npm publish --access public
+          else
+            npm publish --provenance --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  pypi:
+    name: Publish to PyPI
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+    runs-on: ubuntu-latest
+    environment: pypi          # must match the trusted publisher registered on PyPI
+    permissions:
+      contents: read
+      id-token: write          # the whole mechanism: no token, an OIDC identity instead
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build
+        working-directory: packages/stratify-py
+        run: |
+          pip install build twine
+          python -m build
+          twine check dist/*
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/stratify-py/dist

@@ -13,8 +13,8 @@ import hashlib
 import json
 import time
 
-from engine import (backtest, detail, honesty, index_series, metrics, signals,
-                    spec as spec_mod)
+from engine import (backtest, detail, honesty, index_series, methodology, metrics,
+                    signals, spec as spec_mod)
 from engine.config import charges, contracts, liquidity, margin, slippage
 from engine import db as engine_db
 
@@ -403,9 +403,24 @@ def _spec_hash(spec):
         # The open protocol hashes its whole declaration: every leg, every rule and every
         # bound changes the trades, and a field left out of the key would let genuinely
         # different searches count as one attempt against the deflated Sharpe.
-        return hashlib.sha256(json.dumps(
-            spec.raw, sort_keys=True, default=str).encode()).hexdigest()[:16]
+        return _digest(json.dumps(spec.raw, sort_keys=True, default=str))
     return _preset_spec_hash(spec)
+
+
+def _digest(material):
+    """Hash the spec TOGETHER WITH the methodology version.
+
+    The hash is the strategy book's dedup key, so without the version a re-run after a
+    methodology change would overwrite the old row's statistics in place -- the user's
+    recorded Sharpe would move with no event to point at. Including it means the two runs
+    are two entries, each attributable to the model that produced it.
+
+    It is also the deflated-Sharpe variant counter's key. Two runs of one spec under
+    different methodologies genuinely are two trials of a hypothesis, so counting them
+    separately is right there too.
+    """
+    return hashlib.sha256(
+        f"m{methodology.VERSION}|{material}".encode()).hexdigest()[:16]
 
 
 def _preset_spec_hash(spec):
@@ -413,10 +428,10 @@ def _preset_spec_hash(spec):
     # deflated-Sharpe variant counter deduplicates on, so a field left out would let a
     # caller run genuinely different strategies that all count as one attempt -- which is
     # the multiple-comparisons problem the panel exists to report.
-    return hashlib.sha256(repr((
+    return _digest(repr((
         spec.structure, sorted(spec.params.items()), spec.entry_time, spec.exit_time,
         spec.cadence, spec.max_dte, spec.gate, spec.bias, spec.date_from,
-        spec.date_to)).encode()).hexdigest()[:16]
+        spec.date_to)))
 
 
 def run_backtest(arguments, context):
@@ -483,13 +498,19 @@ def run_backtest(arguments, context):
         # weaker model falls into every time.
         "interpretation": knowledge.interpretation(summary, panel, parsed),
         "cost_seconds": {"cpu": round(cpu, 3), "wall": round(time.time() - wall0, 3)},
+        # WHICH MODEL PRODUCED THIS. Without it a stored figure cannot be attributed, and
+        # a methodology improvement silently rewrites every number a user has recorded.
+        # `slippage_basis` and `margin_calibrated_at` are in here because both can change
+        # the answer with no code change at all -- see engine/methodology.py.
+        "methodology": methodology.stamp(),
     }
     payload.update(rich)
     payload["data_release"] = _release_note(rich)
     payload = _trim(payload, level)
     spec_hash = _spec_hash(parsed)
     backtest_id, token = store.save_result(
-        context["key_id"], json.dumps(raw), spec_hash, json.dumps(payload, default=str))
+        context["key_id"], json.dumps(raw), spec_hash, json.dumps(payload, default=str),
+        methodology_json=json.dumps(payload["methodology"]))
     payload["backtest_id"] = backtest_id
     payload["report_url"] = f"{context['base_url']}/r/{token}"
     payload["report_note"] = (
@@ -783,6 +804,11 @@ def _coverage(tier):
         "symbol": "NIFTY",
         "resolution": "1-minute",
         "tier": tier,
+        # Published so a caller holding an older result can see the methodology moved,
+        # and ask explain_methodology('changelog') what changed and whether it moved
+        # numbers. Without this a client can only discover a change by noticing a figure
+        # it recorded no longer reproduces.
+        "methodology": methodology.stamp(),
         "from": str(coverage["d0"]), "to": str(coverage["d1"]),
         "tier_window": {"from": str(win_from), "to": str(win_to)},
         "trading_days": coverage["days"], "expiries": coverage["expiries"],
@@ -911,7 +937,8 @@ BOOK_FIELDS = ("entry_id", "backtest_id", "structure", "cadence", "n_trades",
                "pnl_rupees", "mean_rom", "sharpe", "profit_factor",
                "max_drawdown_rupees", "peak_margin_points", "health_score", "verdict",
                "deflated_sharpe", "oos_held_up", "folds_profitable", "folds_total",
-               "worst_fold_rupees", "median_fold_rupees", "times_seen")
+               "worst_fold_rupees", "median_fold_rupees", "times_seen",
+               "methodology_version")
 
 
 def list_strategies(arguments, context):

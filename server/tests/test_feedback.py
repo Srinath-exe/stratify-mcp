@@ -12,6 +12,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
+import conftest as _conftest
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -153,9 +155,13 @@ def test_my_reports_are_scoped_to_the_account(client):
 # ---------------------------------------------------------------- the MCP tool
 
 def rpc(client, key, name, arguments):
-    return client.post("/mcp", headers=auth(key), json={
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": name, "arguments": arguments}}).json()
+    # Same guard as test_server.call: an unreachable database surfaces here as the
+    # endpoint's generic internal error, and failing on a missing "result" key would
+    # report a missing database as a broken feature.
+    return _conftest.skip_if_the_database_is_why_this_failed(client.post(
+        "/mcp", headers=auth(key), json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": name, "arguments": arguments}}).json())
 
 
 def test_the_tool_is_listed_and_files(client):
@@ -409,12 +415,15 @@ def test_every_surface_shares_one_design_system(client):
 # ---------------------------------------------------------------- reported by a user
 
 def _run(client, key, detail="standard"):
-    return client.post("/mcp", headers=auth(key), json={
+    # Same guard as rpc() above: this drives the real request path, so a missing database
+    # arrives as the endpoint's generic error rather than as a connection exception.
+    return _conftest.skip_if_the_database_is_why_this_failed(client.post(
+        "/mcp", headers=auth(key), json={
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": "run_backtest", "arguments": {
             "spec": {"structure": "iron_condor", "entry_time": "09:30",
                      "params": {"pct_offset": 1.5, "pct_width": 1.0, "entry_dte": 4}},
-            "lots": 1, "detail": detail}}}).json()["result"]
+            "lots": 1, "detail": detail}}}).json())["result"]
 
 
 def test_the_brief_describes_what_is_actually_attached(client):

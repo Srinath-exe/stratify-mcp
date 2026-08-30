@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 
 import pytest
+
+import conftest as _conftest
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -59,7 +61,8 @@ def rpc(client, method, params=None, key=None, request_id=1):
 
 
 def call(client, name, arguments, key):
-    return rpc(client, "tools/call", {"name": name, "arguments": arguments}, key=key)
+    return _conftest.skip_if_the_database_is_why_this_failed(
+        rpc(client, "tools/call", {"name": name, "arguments": arguments}, key=key))
 
 
 # ---------------------------------------------------------------- protocol
