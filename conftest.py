@@ -39,11 +39,18 @@ _CONNECTION_ERRORS = (
     "max retries exceeded", "timed out", "no route to host",
 )
 
-_SIGNALS_SKIP = (
-    "needs the signals module, an optional runtime input this repository does not ship. "
-    "See vendor/README.md -- it is two dicts, GATES and BIASES, and any module satisfying "
-    "that contract works. Point STRATIFY_SIGNALS_PATH at one to run these."
-)
+# The three runtime inputs the engine loads but does not own, documented in
+# vendor/README.md. None is shipped: two live in a private research repo and the third is a
+# live trading database. A clone genuinely cannot evaluate a gate or price naked margin
+# without them, so tests that need one say so instead of failing.
+_OPTIONAL_INPUTS = {
+    "signals.py": ("STRATIFY_SIGNALS_PATH",
+                   "the signals module (GATES and BIASES)"),
+    "margin_calibration.json": ("STRATIFY_MARGIN_CALIBRATION",
+                                "the measured SPAN calibration table"),
+    "paper_trades.sqlite": ("STRATIFY_PAPER_TRADING_DB",
+                            "the live paper-trading book"),
+}
 
 _reachable = None
 
@@ -77,11 +84,21 @@ def _looks_like_a_connection_failure(excinfo):
     return excinfo.typename == "KeyError" and str(excinfo.value) in ("'result'", '"result"')
 
 
-def _is_missing_signals(excinfo):
+def _missing_optional_input(excinfo):
+    """Which optional input this failure is about, or None.
+
+    Reads the path out of the FileNotFoundError and confirms it really is absent, so a
+    missing-file error naming something else -- or naming one of these on a machine that
+    has it -- stays a failure.
+    """
     if excinfo is None or excinfo.typename != "FileNotFoundError":
-        return False
-    from engine import signals
-    return "signals.py" in str(excinfo.value) and not signals.PRODUCTION_SIGNALS.exists()
+        return None
+    path = getattr(excinfo.value, "filename", "") or str(excinfo.value)
+    for name, (env_var, description) in _OPTIONAL_INPUTS.items():
+        if name in path and not os.path.exists(path):
+            return (f"needs {description}, an optional runtime input this repository does "
+                    f"not ship. See vendor/README.md. Set {env_var} to run these.")
+    return None
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -97,14 +114,13 @@ def pytest_runtest_makereport(item, call):
         report.outcome = "skipped"
         report.longrepr = (str(item.path), item.location[1], f"Skipped: {_SKIP_REASON}")
         return
-    # The signals module is the OTHER optional runtime input. Gates and biases are loaded
-    # from the production definitions rather than reimplemented, so this service and the
-    # live trading daemon cannot drift into two definitions of "bullish" -- which means a
-    # clone without it genuinely cannot evaluate a gate. Same two conditions: the error has
-    # to be the file being missing, and the file has to actually be missing.
-    if _is_missing_signals(call.excinfo):
+    # The optional runtime inputs are the other reason a clone cannot run a test. Same two
+    # conditions throughout this file: the error has to name one of them, and the file has
+    # to actually be absent.
+    missing = _missing_optional_input(call.excinfo)
+    if missing:
         report.outcome = "skipped"
-        report.longrepr = (str(item.path), item.location[1], f"Skipped: {_SIGNALS_SKIP}")
+        report.longrepr = (str(item.path), item.location[1], f"Skipped: {missing}")
 
 
 def skip_if_the_database_is_why_this_failed(response):

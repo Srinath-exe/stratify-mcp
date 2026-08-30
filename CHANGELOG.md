@@ -17,7 +17,7 @@ point at the methodology version.
   produced it. The version is inside `spec_hash`, so re-running a spec after a
   methodology change creates a new strategy-book entry instead of silently overwriting
   the old one's statistics. New topic: `explain_methodology("changelog")`.
-- `conftest.py` makes the suite runnable without the serving database: 321 pass, 215 skip
+- `conftest.py` makes the suite runnable without the serving database: 317 pass, 219 skip
   with a reason naming the database, 0 fail.
 - CI on every push and PR; releases publish from a tag.
 

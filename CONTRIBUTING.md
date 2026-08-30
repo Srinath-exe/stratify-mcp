@@ -6,15 +6,15 @@ Thanks for looking. The most useful thing you can do here is **check our arithme
 
 **The data is not in this repository and never will be.** Market data stays on the server; you send a strategy and get results back. That means:
 
-- Roughly **215 of the 536 tests cannot run** on a clone. They need a populated ClickHouse.
+- Roughly **219 of the 536 tests cannot run** on a clone. They need a populated ClickHouse.
 - `conftest.py` turns those into skips *with a reason*, and only when the input is confirmed absent. A failure on your machine is a real failure.
-- The other optional input is `vendor/signals.py` (gates and biases). Same treatment.
+- The same applies to the three optional runtime inputs in [vendor/README.md](vendor/README.md) — the signals module, the SPAN calibration table and the paper-trading book.
 - Run `pytest -rs` to see exactly what was skipped and why.
 
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest engine/tests server/tests -q -rs
-# expect 321 passed, 215 skipped, 0 failed
+# expect 317 passed, 219 skipped, 0 failed
 ```
 
 If you see failures rather than skips, something is genuinely broken — please open an issue.
