@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stratify-mcp"
+version = "0.1.0"
+description = "Python client for the Stratify MCP options-backtesting API"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Stratify" }]
+# pandas is a hard dependency, not optional: DataFrames are the whole point of this
+# package existing alongside the MCP server itself (PRODUCT_REQUIREMENTS.md distribution
+# surfaces table -- "Quants live here; returns pandas DataFrames"). Everything else is the
+# standard library on purpose, so installing this pulls in exactly one real dependency.
+dependencies = ["pandas>=1.5"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://stratify.aeon-labs.site"
+Documentation = "https://stratify.aeon-labs.site/docs"
+
+[tool.setuptools.packages.find]
+include = ["stratify_mcp*"]

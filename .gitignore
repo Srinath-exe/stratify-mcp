@@ -1,0 +1,23 @@
+# Secrets and live state. Never tracked.
+.env
+server/state/
+
+# Runtime inputs supplied per deployment, not shipped. See vendor/README.md.
+vendor/signals.py
+vendor/margin_calibration.json
+vendor/paper_trades.sqlite
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Build output. Rebuilt by `npm run build` / `python -m build`; committing it means a
+# stale dist can be published by accident.
+packages/*/dist/
+packages/*/*.tgz
+packages/*/*.whl
+node_modules/
+
+# Local deployment file, derived from docker-compose.example.yml.
+docker-compose.yml

@@ -1,0 +1,8 @@
+.venv-tvmcp/
+**/__pycache__/
+.pytest_cache/
+*.pyc
+server/state/
+context/
+data/
+.env

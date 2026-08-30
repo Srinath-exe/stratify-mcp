@@ -1,0 +1,85 @@
+# Self-hosting template. Copy to docker-compose.yml and adjust.
+#
+# This is not the deployed topology — it is the minimum that is safe. Read SECURITY.md
+# before changing the two things flagged below; both have been real incidents.
+
+services:
+  mcp:
+    build: .
+    image: stratify-mcp:local
+    container_name: stratify_mcp
+    restart: unless-stopped
+
+    # LOOPBACK ONLY. Docker publishes to 0.0.0.0 by default and installs its iptables rules
+    # ahead of ufw — that is exactly how a ClickHouse instance ends up answering anonymous
+    # queries from the public internet on 8123. Terminate TLS in a reverse proxy in front
+    # of this and let nothing else reach the port.
+    ports:
+      - "127.0.0.1:8792:8792"
+
+    environment:
+      # Reached by container name over the private network below, so ClickHouse needs no
+      # published port at all for this service to work.
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_HTTP_PORT: 8123
+
+      # The service NEVER needs the ClickHouse admin user. `default` holds
+      # access_management plus FILE, URL, S3 and REMOTE; every request here binds a
+      # per-tier user instead. Blanking it denies the admin credential to the
+      # internet-facing process even if the env file carries it.
+      CLICKHOUSE_PASSWORD: ""
+      # Per-tier users, whose visible date range is a ClickHouse row policy — see
+      # data/schema/70_tiers.sql. Isolation is enforced by the database, not by Python.
+      CLICKHOUSE_FREE_PASSWORD: ${CLICKHOUSE_FREE_PASSWORD}
+      CLICKHOUSE_PAID_PASSWORD: ${CLICKHOUSE_PAID_PASSWORD}
+
+      # X-Forwarded-For is honoured ONLY when this is "1", and only the rightmost hop —
+      # the one your own proxy appended. Leave it unset if nothing sits in front.
+      STRATIFY_BEHIND_PROXY: "1"
+      # uvicorn honours X-Forwarded-Proto only from an address it trusts, and a reverse
+      # proxy reaches this container from the Docker bridge gateway, not 127.0.0.1. Safe
+      # here only BECAUSE the published port above is loopback-only.
+      FORWARDED_ALLOW_IPS: "*"
+
+      # Adds to app.py's DEFAULT_BROWSER_ORIGINS rather than replacing it.
+      STRATIFY_ALLOWED_ORIGINS: "https://your-host.example"
+      STRATIFY_PUBLIC_BASE_URL: "https://your-host.example"
+      STRATIFY_PUBLIC_MCP_URL: "https://your-host.example/mcp"
+
+      STRATIFY_SERVICE_DB: /app/server/state/service.sqlite
+
+      # Runtime inputs the engine loads but this repository does not ship. Read
+      # vendor/README.md for what each one is and what happens without it.
+      STRATIFY_SIGNALS_PATH: /app/vendor/signals.py
+      STRATIFY_MARGIN_CALIBRATION: /app/vendor/margin_calibration.json
+      # STRATIFY_PAPER_TRADING_DB: /app/vendor/paper_trades.sqlite
+
+      PORT: 8792
+
+    env_file:
+      # STRATIFY_KEY_PEPPER lives here. server/run.sh refuses to start without it: the
+      # in-code default is a development value printed in this repository, and starting
+      # with it would hash every API key against a publicly known constant.
+      - .env
+
+    volumes:
+      # Accounts, API-key hashes and usage — the one piece of durable state this service
+      # owns. Kept outside the image so a rebuild never destroys a user's key.
+      - ./server/state:/app/server/state
+      # Supply your own; see vendor/README.md.
+      - ./vendor:/app/vendor:ro
+
+    networks:
+      - clickhouse
+
+    # A request is ~92% CPU-bound Python at about 0.026 CPU-seconds, so cores are the
+    # constraint and memory is not.
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+networks:
+  clickhouse:
+    external: true
+    name: clickhouse_default

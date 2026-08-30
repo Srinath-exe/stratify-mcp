@@ -1,0 +1,45 @@
+{
+  "name": "stratify-mcp",
+  "version": "0.1.0",
+  "description": "JS/TS client and stdio-to-HTTP bridge for the Stratify options-backtesting MCP server",
+  "type": "module",
+  "main": "./dist/src/client.js",
+  "types": "./dist/src/client.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/client.d.ts",
+      "import": "./dist/src/client.js"
+    }
+  },
+  "bin": {
+    "stratify-mcp": "./dist/src/bin.js",
+    "stratify-mcp-proxy": "./dist/src/bin.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "pretest": "npm run build",
+    "test": "node --test dist/test/*.test.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.14.0"
+  },
+  "homepage": "https://stratify.aeon-labs.site",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "options",
+    "backtesting",
+    "nifty",
+    "trading",
+    "claude"
+  ]
+}

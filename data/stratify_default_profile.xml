@@ -1,0 +1,13 @@
+<clickhouse>
+    <profiles>
+        <!-- The default profile had no memory ceiling at all. Tier users are capped by
+             their own profiles, but anything connecting as "default" (a maintenance
+             script, a build job, an engine call that forgot to bind a tier) could ask for
+             the whole server. That is how a load test OOM-killed the database: 21.3 GB
+             resident on a 31 GB box, killed by the kernel. -->
+        <default>
+            <max_memory_usage>4000000000</max_memory_usage>
+            <max_execution_time>300</max_execution_time>
+        </default>
+    </profiles>
+</clickhouse>

@@ -1,0 +1,20 @@
+<clickhouse>
+    <!-- Server-wide ceilings.
+         ClickHouse was OOM-killed at 21.3 GB resident on a 31 GB box during a load test:
+         the per-tier profiles cap memory per USER, but nothing capped the server, and the
+         default was 90 % of RAM. On a machine that also runs the ingestion pipeline, the
+         paper-trading daemon and the API workers, 90 % is not a ceiling — it is a
+         collision. 45 % leaves the rest of the box its share. -->
+    <max_server_memory_usage_to_ram_ratio>0.45</max_server_memory_usage_to_ram_ratio>
+
+    <!-- 1000 concurrent queries on 8 cores is not concurrency, it is a queue with extra
+         memory. Each query holds working memory whether or not it is scheduled. -->
+    <max_concurrent_queries>64</max_concurrent_queries>
+
+    <!-- Cache for repeated sub-queries; the serving tables are rebuilt, never mutated, so
+         a cached result cannot go stale under a reader. -->
+    <query_cache>
+        <max_size_in_bytes>1073741824</max_size_in_bytes>
+        <max_entries>4096</max_entries>
+    </query_cache>
+</clickhouse>
