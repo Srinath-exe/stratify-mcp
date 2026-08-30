@@ -1,7 +1,7 @@
 # Three suites, three jobs, because they fail for unrelated reasons and a single job
 # would hide the second failure behind the first.
 #
-# WHAT CI CANNOT RUN. 208 of the 536 tests need a populated ClickHouse, which no runner
+# WHAT CI CANNOT RUN. 215 of the 536 tests need either a populated ClickHouse or the signals module, neither of which a runner
 # has -- the data is the one thing this repository does not ship. The root conftest.py
 # turns those into SKIPS with a reason, and only when the database is confirmed
 # unreachable, so a genuine failure on a machine that has one still fails. `-rs` prints
@@ -41,7 +41,7 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Test
-        # No database here, so expect 328 passed and 208 skipped. A FAILURE is real.
+        # Neither optional input is here, so expect 321 passed and 215 skipped. A FAILURE is real.
         run: python -m pytest engine/tests server/tests -q -rs
         env:
           STRATIFY_KEY_PEPPER: ci-pepper-not-a-real-secret

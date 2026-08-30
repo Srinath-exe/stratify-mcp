@@ -39,6 +39,12 @@ _CONNECTION_ERRORS = (
     "max retries exceeded", "timed out", "no route to host",
 )
 
+_SIGNALS_SKIP = (
+    "needs the signals module, an optional runtime input this repository does not ship. "
+    "See vendor/README.md -- it is two dicts, GATES and BIASES, and any module satisfying "
+    "that contract works. Point STRATIFY_SIGNALS_PATH at one to run these."
+)
+
 _reachable = None
 
 
@@ -71,6 +77,13 @@ def _looks_like_a_connection_failure(excinfo):
     return excinfo.typename == "KeyError" and str(excinfo.value) in ("'result'", '"result"')
 
 
+def _is_missing_signals(excinfo):
+    if excinfo is None or excinfo.typename != "FileNotFoundError":
+        return False
+    from engine import signals
+    return "signals.py" in str(excinfo.value) and not signals.PRODUCTION_SIGNALS.exists()
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     outcome = yield
@@ -83,6 +96,15 @@ def pytest_runtest_makereport(item, call):
     if _looks_like_a_connection_failure(call.excinfo) and not _database_is_reachable():
         report.outcome = "skipped"
         report.longrepr = (str(item.path), item.location[1], f"Skipped: {_SKIP_REASON}")
+        return
+    # The signals module is the OTHER optional runtime input. Gates and biases are loaded
+    # from the production definitions rather than reimplemented, so this service and the
+    # live trading daemon cannot drift into two definitions of "bullish" -- which means a
+    # clone without it genuinely cannot evaluate a gate. Same two conditions: the error has
+    # to be the file being missing, and the file has to actually be missing.
+    if _is_missing_signals(call.excinfo):
+        report.outcome = "skipped"
+        report.longrepr = (str(item.path), item.location[1], f"Skipped: {_SIGNALS_SKIP}")
 
 
 def skip_if_the_database_is_why_this_failed(response):
