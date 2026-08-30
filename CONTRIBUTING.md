@@ -6,14 +6,14 @@ Thanks for looking. The most useful thing you can do here is **check our arithme
 
 **The data is not in this repository and never will be.** Market data stays on the server; you send a strategy and get results back. That means:
 
-- Roughly **208 of the 527 tests cannot run** on a clone. They need a populated ClickHouse.
+- Roughly **208 of the 536 tests cannot run** on a clone. They need a populated ClickHouse.
 - `conftest.py` turns those into skips *with a reason*, and only when the database is confirmed unreachable. A failure on your machine is a real failure.
 - Run `pytest -rs` to see exactly what was skipped and why.
 
 ```bash
-pip install -r requirements.txt pytest
+pip install -r requirements-dev.txt
 python -m pytest engine/tests server/tests -q -rs
-# expect ~319 passed, ~208 skipped, 0 failed
+# expect 328 passed, 208 skipped, 0 failed
 ```
 
 If you see failures rather than skips, something is genuinely broken — please open an issue.
@@ -21,8 +21,9 @@ If you see failures rather than skips, something is genuinely broken — please 
 ## Setup
 
 ```bash
-# Python service
-pip install -r requirements.txt
+# Python service. requirements.txt is what the SERVICE needs; -dev adds the test
+# dependencies, which are deliberately kept out of the runtime image.
+pip install -r requirements-dev.txt
 cp .env.example .env          # STRATIFY_KEY_PEPPER is required; run.sh refuses without it
 
 # npm client

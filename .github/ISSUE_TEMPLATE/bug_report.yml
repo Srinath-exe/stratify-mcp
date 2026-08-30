@@ -32,5 +32,5 @@ body:
       label: Test output (self-hosted only)
       description: |
         `python -m pytest engine/tests server/tests -q -rs`. Skips are expected without a
-        database — around 208 of them. Failures are not.
+        database — 208 of them. Failures are not.
       render: shell
