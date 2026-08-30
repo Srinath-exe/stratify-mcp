@@ -2,6 +2,14 @@
   "name": "stratify-mcp",
   "version": "0.1.0",
   "description": "JS/TS client and stdio-to-HTTP bridge for the Stratify options-backtesting MCP server",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Srinath-exe/stratify-mcp.git",
+    "directory": "packages/stratify-npm"
+  },
+  "bugs": {
+    "url": "https://github.com/Srinath-exe/stratify-mcp/issues"
+  },
   "type": "module",
   "main": "./dist/src/client.js",
   "types": "./dist/src/client.d.ts",

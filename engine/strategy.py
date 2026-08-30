@@ -255,9 +255,17 @@ def parse_leg(raw, where, index=None):
             f"{where}.expiry must be one of {', '.join(EXPIRY_REFS)} — 'near' is the "
             f"nearest expiry at entry, 'next' the one after it (which is how a calendar "
             f"spread is written)")
+    # A label is free text a caller chose, and it is echoed back in refusals, rule
+    # descriptions and the rendered report. Every render escapes it, so this is not an XSS
+    # guard -- it is a bound. Unconstrained, it accepted any JSON value of any type and any
+    # length up to the whole request body, which is a silly thing to carry through the
+    # engine and store per trade.
+    label = raw.get("label")
+    if label is not None and (not isinstance(label, str) or len(label) > 60):
+        raise StrategyError(f"{where}.label must be text of at most 60 characters")
     return {"side": side, "type": otype, "qty": qty, "expiry": expiry,
             "strike": parse_strike(raw["strike"], f"{where}.strike"),
-            "label": raw.get("label") or (f"L{index}" if index is not None else None)}
+            "label": label or (f"L{index}" if index is not None else None)}
 
 
 # ---------------------------------------------------------------------- condition

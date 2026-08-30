@@ -70,7 +70,8 @@ SQL window frame ends the day *before* entry.
 engine/      Spec in, trades and evidence out.
 server/      MCP service, dashboard, Google sign-in, quotas, reports.
 data/        ClickHouse schema and per-tier settings profiles.
-packages/    Published clients — npm (TS) and PyPI (Python).
+packages/    Published clients, released FROM this repo — npm and PyPI both
+             point back here. stratify-npm is TS, stratify-py is Python.
 tests/       Adversarial suites: 100-strategy uniqueness sweep, exotic specs, market gates.
 docs/        Internal design record, frozen at the dates in each header.
 vendor/      Runtime inputs the engine loads but does not ship. Read vendor/README.md.

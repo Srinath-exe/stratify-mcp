@@ -30,7 +30,11 @@ import time
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
 FIXTURES = HERE / "state" / "fixtures"
-DEFAULT_OUT = pathlib.Path("/var/www/ops/report-demo")
+# Repo-relative by default. It used to be an absolute path into this box's nginx webroot,
+# which made a developer tool write into a served directory on any machine that happened to
+# have one, and named an internal path in a file that is now public. Point
+# STRATIFY_PREVIEW_OUT at a webroot when you actually want to serve the output.
+DEFAULT_OUT = pathlib.Path(os.getenv("STRATIFY_PREVIEW_OUT", str(HERE / "state" / "preview")))
 
 # Named strategies to iterate against. The first is the demo: a real, ordinary,
 # not-especially-good strategy, which is the honest case to design the page around. A

@@ -66,12 +66,18 @@ edit that constant; setting the environment variable only adds to it.
 
 ## If you self-host
 
-The two settings most likely to be got wrong:
+The three settings most likely to be got wrong:
 
 1. **Do not publish the service port.** Docker publishes to `0.0.0.0` by default and
    installs its iptables rules ahead of `ufw`. Bind to `127.0.0.1` and terminate TLS in
    front of it. ClickHouse should have no host port mapping at all.
-2. **Do not give the service the ClickHouse admin user.** The `default` user holds
+2. **If you enable URL-embedded keys, make sure your proxy does not log them.**
+   `POST /mcp/k/{key}` exists because some MCP clients cannot send a custom header, and it
+   puts an API key somewhere keys should not be: the request line, which almost every
+   reverse proxy logs by default. The hosted service suppresses logging for that path. A
+   fresh deployment does not. Either configure the same suppression or leave the route off
+   — it is gated by `ALLOW_URL_KEY` and returns 404 when disabled.
+3. **Do not give the service the ClickHouse admin user.** The `default` user holds
    `access_management` plus `FILE`, `URL`, `S3` and `REMOTE`. The service never needs it —
    every request binds a per-tier user. `docker-compose.example.yml` blanks
    `CLICKHOUSE_PASSWORD` for this reason.

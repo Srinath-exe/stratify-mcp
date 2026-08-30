@@ -110,10 +110,26 @@ def test_an_expired_or_tampered_handshake_is_refused():
 
 def test_the_next_parameter_cannot_leave_this_site():
     """An open redirect here would let a phishing page send somebody through a real Google
-    login and land them somewhere else entirely."""
-    for hostile in ("//evil.test", "https://evil.test", "javascript:alert(1)", 7, None):
-        assert oauth._safe_next(hostile) == "/app"
-    assert oauth._safe_next("/app/logs") == "/app/logs"
+    login and land them somewhere else entirely.
+
+    THIS TEST USED TO PASS WHILE THE GUARD WAS BROKEN. It covered "//evil" and an absolute
+    URL but not the backslash form, and a leading-"//" check alone does not stop it:
+    browsers normalise "\\" to "/" before resolving, so "/\\evil.test" was accepted here and
+    then fetched as "//evil.test". Control characters do the same, being stripped during
+    the same normalisation. Each shape below is a way of writing an authority that a naive
+    prefix test reads as a path.
+    """
+    hostile = ("//evil.test", "https://evil.test", "javascript:alert(1)", 7, None,
+               "/\\evil.test",         # backslash -> "//evil.test" in Chrome and Firefox
+               "\\\\evil.test",        # both slashes backslashed
+               "/\r\n//evil.test",     # CR/LF stripped, leaving "///evil.test"
+               "/\t\\evil.test",       # tab plus backslash
+               "\\/evil.test")
+    for h in hostile:
+        assert oauth._safe_next(h) == "/app", f"escaped the site via {h!r}"
+    for safe in ("/app/logs", "/app", "/app/keys?new=1", "/r/abc123"):
+        assert oauth._safe_next(safe) == safe
+    assert len(oauth._safe_next("/a" * 500)) <= 200
 
 
 def test_a_verified_google_identity_is_matched_on_subject_not_email(client):

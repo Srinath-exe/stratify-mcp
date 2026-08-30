@@ -236,10 +236,26 @@ def _unsign(cookie):
 
 def _safe_next(path):
     """Only ever a path on this site. An open redirect here would let a phishing page send
-    somebody through a real Google login and land them somewhere else entirely."""
-    if not isinstance(path, str) or not path.startswith("/") or path.startswith("//"):
+    somebody through a real Google login and land them somewhere else entirely.
+
+    A LEADING-"//" TEST IS NOT ENOUGH, and this guard failed to one character until
+    2026-08-30. Browsers normalise a backslash to a forward slash before they resolve a
+    URL, so `/\evil.com` passes `startswith("/")`, fails `startswith("//")`, and is then
+    fetched as `//evil.com` -- a protocol-relative jump to another origin. Control
+    characters (tab, CR, LF) are stripped during the same normalisation and smuggle the
+    same shape past a naive prefix test.
+
+    So: normalise the way a browser would FIRST, then decide. Anything that could be read
+    as an authority after normalisation is refused, and the normalised form is what is
+    returned -- never the raw input.
+    """
+    if not isinstance(path, str):
         return "/app"
-    return path[:200]
+    cleaned = path.replace("\\", "/")
+    cleaned = "".join(ch for ch in cleaned if 0x20 < ord(ch) != 0x7f)
+    if not cleaned.startswith("/") or cleaned.startswith("//"):
+        return "/app"
+    return cleaned[:200]
 
 
 def verify_id_token(credential, csrf_cookie, csrf_field):

@@ -22,6 +22,8 @@ dev = ["pytest>=7"]
 [project.urls]
 Homepage = "https://stratify.aeon-labs.site"
 Documentation = "https://stratify.aeon-labs.site/docs"
+Source = "https://github.com/Srinath-exe/stratify-mcp"
+Issues = "https://github.com/Srinath-exe/stratify-mcp/issues"
 
 [tool.setuptools.packages.find]
 include = ["stratify_mcp*"]
