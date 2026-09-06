@@ -1,13 +1,13 @@
 # Pinned to what the backend was benchmarked and tested against on 2026-08-25.
 # Unpinned installs are how a container drifts away from the box it was measured on.
-clickhouse-connect==0.8.18
-fastapi==0.115.0
-uvicorn==0.32.0
-numpy==2.4.6
-pandas==2.3.2
+clickhouse-connect==1.8.0
+fastapi==0.141.1
+uvicorn==0.52.4
+numpy==2.5.2
+pandas==3.0.5
 # Starlette asserts on this for ANY form parsing -- urlencoded included, not just file
 # uploads -- so without it every POST from an HTML form is a 500. It was absent from the
 # image while being present in every developer interpreter (FastAPI's test extras pull it
 # in), which is why a green test suite said nothing: the signup form and the dashboard's
 # key button had both been failing in production.
-python-multipart==0.0.17
+python-multipart==0.0.32

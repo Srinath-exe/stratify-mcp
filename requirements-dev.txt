@@ -10,9 +10,9 @@
 # and CI installs them separately so the split cannot rot.
 -r requirements.txt
 
-pytest>=7
+pytest>=9.1.1
 # fastapi.testclient imports it. It must NOT move into requirements.txt: server/oauth.py
 # uses stdlib urllib precisely so the runtime image never needs an HTTP client, after
 # httpx-in-oauth crash-looped the container on deploy.
-httpx>=0.27
-PyYAML>=6          # workflow and template linting in CI
+httpx>=0.28.1
+PyYAML>=6.0.3          # workflow and template linting in CI
