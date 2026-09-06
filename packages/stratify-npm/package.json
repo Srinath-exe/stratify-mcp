@@ -39,8 +39,8 @@
     "prepublishOnly": "npm run build && npm test"
   },
   "devDependencies": {
-    "typescript": "^5.5.0",
-    "@types/node": "^20.14.0"
+    "typescript": "^7.0.2",
+    "@types/node": "^26.4.1"
   },
   "homepage": "https://stratify.aeon-labs.site",
   "keywords": [
