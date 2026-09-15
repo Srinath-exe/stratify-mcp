@@ -11,6 +11,11 @@ point at the methodology version.
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-09-15
+
+First tagged release. `0.1.0` of the npm client was published by hand to bootstrap
+trusted publishing; from here both clients ship from a tag.
+
 ### Added
 - Methodology versioning. Every result now carries a stamp — version, slippage basis and
   margin calibration date — so a stored figure can be attributed to the model that
@@ -19,7 +24,8 @@ point at the methodology version.
   the old one's statistics. New topic: `explain_methodology("changelog")`.
 - `conftest.py` makes the suite runnable without the serving database: 317 pass, 219 skip
   with a reason naming the database, 0 fail.
-- CI on every push and PR; releases publish from a tag.
+- CI on every push and PR; releases publish from a tag. Both registries use trusted
+  publishing -- no stored token anywhere.
 
 ### Fixed
 - **Open redirect** in the Google sign-in flow. `_safe_next` rejected `//evil` but not
@@ -32,6 +38,6 @@ point at the methodology version.
 - A leg `label` was unbounded free text of any JSON type. Now text, 60 characters.
 - `server/preview.py` no longer defaults its output into a webroot.
 
-## [0.1.0] — unreleased
+## [0.1.0] — 2026-09-15
 
-First release: MCP server, npm client and stdio bridge, Python client.
+First release: MCP server, npm client and stdio bridge, Python client. npm only.
