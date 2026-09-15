@@ -79,4 +79,4 @@ python -m pytest engine/tests server/tests -q        # expect 536 passed, 0 skip
 git tag v0.1.1 && git push origin v0.1.1
 ```
 
-`release.yml` re-runs everything, then publishes to npm and PyPI. Both use trusted publishing: no token is stored anywhere, the workflow's OIDC identity is exchanged for a one-shot credential. Provenance attestations attach automatically once the repository is public. The one-time registry setup is in `packages/stratify-npm/PUBLISHING.md`.
+`release.yml` re-runs everything, then publishes to PyPI. npm is published from the monorepo for now (a tag `npm-v<version>` there) -- `packages/stratify-npm/PUBLISHING.md` explains why and how to fold it back. Both use trusted publishing: no token is stored anywhere, the workflow's OIDC identity is exchanged for a one-shot credential.

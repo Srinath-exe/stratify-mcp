@@ -80,7 +80,14 @@ jobs:
   npm:
     name: Publish to npm
     needs: verify
-    if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+    # DISABLED until npm accepts GitHub's immutable OIDC subject claims. This repository
+    # was created after 2026-07-15, so its tokens carry `repo:owner@id/repo@id`, which
+    # npm's exchange endpoint rejects as "package not found" (npm/cli#9969). npm is
+    # published meanwhile from the older Srinath-exe/Stratify repository, whose tokens
+    # still use the legacy subject -- see packages/stratify-npm/PUBLISHING.md. When npm
+    # fixes it: delete the `false &&` below, re-point the trusted publisher on npmjs.com
+    # at this repo + release.yml + environment npm, and remove the other workflow.
+    if: false && startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
     runs-on: ubuntu-latest
     environment: npm         # must match the trusted publisher registered on npmjs.com
     permissions:
@@ -110,6 +117,7 @@ jobs:
 
       - name: Publish
         working-directory: packages/stratify-npm
+        shell: bash   # sets -o pipefail: the grep below must not hide npm's exit code
         # No NODE_AUTH_TOKEN: npm sees the id-token permission, asks GitHub for an OIDC
         # token and trades it for a single-publish credential. Provenance -- the signed
         # attestation tying this tarball to this commit -- is attached automatically once

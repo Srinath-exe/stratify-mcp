@@ -1,70 +1,76 @@
 # Publishing the clients
 
-Both clients ship from one tag on this repository:
-`.github/workflows/release.yml` runs the tests, checks the tag against both
-package versions, then publishes `stratify-mcp` to npm and to PyPI using
-**trusted publishing** -- the workflow proves its identity with a
-short-lived OIDC token, so no registry token is stored in GitHub or on any
-machine.
+Both clients publish with **trusted publishing** -- the workflow proves its
+identity to the registry with a short-lived OIDC token, so no registry
+token is stored in GitHub or on any machine.
 
-## One-time setup
+They currently ship from two repositories (see *Why two repositories*):
 
-### npm (needs one manual publish first)
+| Package | Registry | Repository | Workflow | Tag |
+|---|---|---|---|---|
+| `stratify-mcp` (Python) | PyPI | `Srinath-exe/stratify-mcp` (this repo) | `release.yml`, environment `pypi` | `v<version>` |
+| `stratify-mcp` (npm) | npm | `Srinath-exe/Stratify` (private monorepo) | `publish-npm.yml`, no environment | `npm-v<version>` |
 
-npm only lets you register a trusted publisher on a package that already
-exists, so the very first version goes out by hand:
-
-1. `npm login` (2FA on the account, always).
-2. From `packages/stratify-npm`: `npm publish --access public`
-   (`prepublishOnly` builds and runs the tests first).
-3. On npmjs.com open the package -> **Settings** -> **Trusted Publisher**
-   -> GitHub Actions:
-   - Organization or user: `Srinath-exe`
-   - Repository: `stratify-mcp`
-   - Workflow filename: `release.yml`
-   - Environment name: `npm`
-   - Allowed actions: allow direct `npm publish` (the workflow does not
-     use `npm stage publish`)
-4. Same page, **Publishing access**: *Require two-factor authentication
-   and disallow tokens*. Trusted publishing is not a token, so the
-   workflow keeps working; a leaked classic token would not.
-5. `npm logout` on the box you published from.
-
-### PyPI (no manual publish needed)
-
-PyPI accepts a *pending* publisher for a project that does not exist yet:
-
-1. pypi.org -> account -> **Publishing** -> *Add a new pending publisher*:
-   - PyPI project name: `stratify-mcp`
-   - Owner: `Srinath-exe`
-   - Repository name: `stratify-mcp`
-   - Workflow name: `release.yml`
-   - Environment name: `pypi`
-2. The first tag creates the project and the pending publisher becomes
-   its trusted publisher.
+The package sources are byte-identical in both repositories; keep them so.
 
 ## Every release
 
 ```bash
-# versions must agree with each other and with the tag
-#   packages/stratify-npm/package.json      "version"
-#   packages/stratify-py/pyproject.toml     version = "..."
-git tag v0.1.1
-git push origin v0.1.1
+# 1. Bump BOTH versions to the same number and add a CHANGELOG entry:
+#      packages/stratify-npm/package.json      "version"
+#      packages/stratify-npm/package-lock.json "version"   (top two occurrences)
+#      packages/stratify-py/pyproject.toml     version = "..."
+#      packages/stratify-py/stratify_mcp/__init__.py
+#    Copy the four package files into the monorepo's stratify_mcp/packages/ too.
+
+# 2. PyPI -- from this repo:
+git tag v0.1.2 && git push origin v0.1.2
+
+# 3. npm -- from the monorepo:
+cd /root/Stratify && git tag npm-v0.1.2 && git push origin npm-v0.1.2
 ```
 
-Watch it under **Actions**. Both publish jobs depend on the test job, so a
-red build never ships. A version already on the registry is refused before
-the build starts.
+Each workflow runs the tests first, checks the tag equals the package
+version, refuses a version already on the registry, publishes, and (npm)
+waits until the registry serves it. Watch under each repo's **Actions**.
 
-`workflow_dispatch` with *dry_run* (the default) runs everything except
-the two publish steps.
+## Why two repositories
+
+GitHub repositories created after 2026-07-15 get OIDC tokens with an
+*immutable* subject claim (`repo:owner@id/repo@id`). npm's token exchange
+does not accept that format yet and answers "package not found"
+([npm/cli#9969](https://github.com/npm/cli/issues/9969)); GitHub's API to
+switch a repository back to the legacy subject returns success and changes
+nothing. This repository was created 2026-08-30. The monorepo dates from
+2025 and still gets the legacy subject, so npm's exchange works there.
+PyPI accepts both formats.
+
+**When npm fixes #9969:** in `.github/workflows/release.yml` remove the
+`false &&` from the npm job's `if:`; on npmjs.com edit the trusted
+publisher to repository `stratify-mcp`, workflow `release.yml`,
+environment `npm`; delete `.github/workflows/publish-npm.yml` from the
+monorepo. One tag then ships both.
+
+## One-time registry setup (done 2026-09-15)
+
+**npm.** The first version (0.1.0) was published by hand because npm only
+registers a trusted publisher on a package that already exists. Then on
+npmjs.com -> package -> Settings -> Trusted Publisher -> GitHub Actions:
+owner `Srinath-exe`, repository `Stratify`, workflow `publish-npm.yml`,
+environment blank, direct `npm publish` allowed. Publishing access is
+*Require 2FA and disallow tokens*: trusted publishing is not a token, so
+the workflow keeps working; a leaked classic token would not.
+
+**PyPI.** A *pending publisher* was registered before the project existed
+(owner `Srinath-exe`, repository `stratify-mcp`, workflow `release.yml`,
+environment `pypi`); the first tagged release created the project. PyPI
+attaches attestations automatically.
 
 ## Notes
 
-- The two GitHub environments (`npm`, `pypi`) are created automatically the
-  first time a job references them. They carry no protection rules; if
-  the repository ever gains other maintainers, add yourself as required
-  reviewer on both so a publish needs a human click.
-- Provenance is not attested while this repository is private. It turns on
-  by itself when the repository is made public; nothing else changes.
+- The `pypi` GitHub environment was created automatically the first time
+  the job referenced it. It carries no protection rules; if the repository
+  ever gains other maintainers, add yourself as required reviewer so a
+  publish needs a human click.
+- npm provenance is not attested while the publishing repository is
+  private; it turns on by itself once npm publishes from a public repo.
