@@ -3,7 +3,7 @@ from .exceptions import (AuthenticationError, ProtocolError, QuotaExceededError,
                          StratifyError, ToolRefusalError, TransportError)
 from .models import BacktestResult
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 __all__ = [
     "StratifyClient", "BacktestResult",

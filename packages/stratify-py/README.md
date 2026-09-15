@@ -113,3 +113,5 @@ Tests run against a mocked transport and need no live server or API key.
 ## License
 
 MIT.
+
+<!-- mcp-name: site.aeon-labs/stratify -->

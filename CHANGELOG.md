@@ -11,6 +11,20 @@ point at the methodology version.
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-09-15
+
+### Added
+- `mcpName` in the npm package and an `mcp-name` marker in the Python README, so the
+  official MCP Registry can verify the packages belong to `site.aeon-labs/stratify`.
+- `packages/server.json` now lists both the hosted endpoint and the npm stdio bridge.
+- `packages/mcpb`: a Claude Desktop extension bundle built from the npm bridge.
+- `packages/gemini-extension`: version 0.1.2, mirrored to its own repository for the
+  Gemini CLI gallery.
+- The Stratify mark: `/static/icon.svg`, `/static/icon-{64,192,512}.png`, `/favicon.ico`.
+
+### Fixed
+- `bin` paths in `package.json` no longer start with `./`, which npm 11 strips on publish.
+
 ## [0.1.1] — 2026-09-15
 
 First tagged release. `0.1.0` of the npm client was published by hand to bootstrap

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "site.aeon-labs/stratify",
+  "title": "Stratify",
+  "description": "Backtest NIFTY option strategies on real 1-minute data, with an honest out-of-sample panel.",
+  "version": "0.1.2",
+  "websiteUrl": "https://stratify.aeon-labs.site",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://stratify-mcp.aeon-labs.site/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer sk_live_... -- a free key from https://stratify.aeon-labs.site (Google sign-in). Clients that speak OAuth may leave this out and sign in when prompted.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "stratify-mcp",
+      "version": "0.1.2",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "STRATIFY_API_KEY",
+          "description": "Your key, sk_live_..., from https://stratify.aeon-labs.site",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}
