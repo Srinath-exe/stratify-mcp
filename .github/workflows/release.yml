@@ -118,7 +118,9 @@ jobs:
           if [ "${{ github.event.repository.private }}" = "true" ]; then
             echo "::warning::repository is private -- npm will publish WITHOUT provenance"
           fi
-          npm publish --access public
+          npm publish --access public --loglevel verbose 2>&1 | grep -viE "^npm (verb|sill) (title|argv|logfile|cache|config|http fetch|shrinkwrap|reify)"
+        # npm only says WHY an OIDC exchange failed at verbose level; without this a
+        # rejected trusted-publisher match surfaces as a bare 404 on the final PUT.
 
   pypi:
     name: Publish to PyPI
@@ -145,3 +147,4 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: packages/stratify-py/dist
+          skip-existing: true   # a re-run after the npm job failed must not go red here

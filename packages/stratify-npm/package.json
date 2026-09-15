@@ -20,8 +20,8 @@
     }
   },
   "bin": {
-    "stratify-mcp": "./dist/bin.js",
-    "stratify-mcp-proxy": "./dist/bin.js"
+    "stratify-mcp": "dist/bin.js",
+    "stratify-mcp-proxy": "dist/bin.js"
   },
   "files": [
     "dist",
