@@ -79,4 +79,4 @@ python -m pytest engine/tests server/tests -q        # expect 536 passed, 0 skip
 git tag v0.1.1 && git push origin v0.1.1
 ```
 
-`release.yml` re-runs everything, then publishes to npm and PyPI. PyPI uses trusted publishing (no token). npm uses `NPM_TOKEN`, and adds `--provenance` once the repository is public.
+`release.yml` re-runs everything, then publishes to npm and PyPI. Both use trusted publishing: no token is stored anywhere, the workflow's OIDC identity is exchanged for a one-shot credential. Provenance attestations attach automatically once the repository is public. The one-time registry setup is in `packages/stratify-npm/PUBLISHING.md`.
