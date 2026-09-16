@@ -2,9 +2,9 @@
 
 ## Reporting a vulnerability
 
-Email **sahej@bluerickshawusa.com** with steps to reproduce. Please do not open a public
-issue for anything that would let a caller read data, escalate a tier, or reach another
-account's records.
+Use GitHub's private reporting: **Security → Report a vulnerability** on this repository.
+It reaches the maintainers only. Please do not open a public issue for anything that
+would let a caller read data, escalate a tier, or reach another account's records.
 
 There is also an in-product path: the `submit_feedback` MCP tool attaches the failing
 call's context automatically, which is usually faster than describing it.

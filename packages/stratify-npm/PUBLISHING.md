@@ -27,7 +27,8 @@ The package sources are byte-identical in both repositories; keep them so.
 git tag v0.1.2 && git push origin v0.1.2
 
 # 3. npm -- from the monorepo:
-cd /root/Stratify && git tag npm-v0.1.2 && git push origin npm-v0.1.2
+# in a checkout of the monorepo:
+git tag npm-v0.1.2 && git push origin npm-v0.1.2
 ```
 
 Each workflow runs the tests first, checks the tag equals the package

@@ -26,7 +26,7 @@ away people who would otherwise have helped.
 
 ## Enforcement
 
-Report to **sahej@bluerickshawusa.com**. Reports stay confidential.
+Report through the contact page at https://stratify.aeon-labs.site/contact, or privately via **Security → Report a vulnerability** on this repository if it concerns conduct in a security report. Reports stay confidential.
 
 The maintainers will respond in a way they judge proportionate — a private word, an edit,
 a temporary block, or a permanent one. Maintainers who behave badly are not exempt.
