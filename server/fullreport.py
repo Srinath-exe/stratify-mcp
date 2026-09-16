@@ -149,10 +149,15 @@ def rules(spec):
 
     entry = []
     if spec.get("cadence", "weekly") == "weekly":
-        dte = p.get("entry_dte")
+        dte = p.get("entry_dte"); ndb = p.get("entry_days_before")
         entry.append("Enters once per weekly expiry" +
-                     (f", {dte} days before it" if dte is not None else "") +
+                     (f", {ndb} trading session{'s' if ndb != 1 else ''} before it"
+                      if ndb is not None else
+                      (f", {dte} days before it" if dte is not None else "")) +
                      f", at {spec.get('entry_time', '09:15')}.")
+        if spec.get("overlay"):
+            entry.append(f"Skips the week when the index's 20-day realised volatility is "
+                         f"above {spec['overlay'][3:]}% at entry ({spec['overlay']} overlay).")
     else:
         entry.append(f"Enters every trading session at {spec.get('entry_time', '09:15')}, "
                      f"on whichever weekly expiry is nearest.")
@@ -1741,10 +1746,12 @@ def rules_short(spec):
     p = spec.get("params") or {}
     out = []
     if spec.get("cadence", "weekly") == "weekly":
-        dte = p.get("entry_dte")
+        dte = p.get("entry_dte"); ndb = p.get("entry_days_before")
         out.append(("Enters", f"every weekly expiry"
-                    + (f", {dte}d out" if dte is not None else "")
-                    + f", {spec.get('entry_time', '09:15')}"))
+                    + (f", T-{ndb}" if ndb is not None else
+                       (f", {dte}d out" if dte is not None else ""))
+                    + f", {spec.get('entry_time', '09:15')}"
+                    + (f", {spec['overlay']} filter" if spec.get("overlay") else "")))
     else:
         limit = spec.get("max_dte")
         out.append(("Enters", f"every session, {spec.get('entry_time', '09:15')}"

@@ -255,7 +255,12 @@ def _safe_next(path):
     cleaned = "".join(ch for ch in cleaned if 0x20 < ord(ch) != 0x7f)
     if not cleaned.startswith("/") or cleaned.startswith("//"):
         return "/app"
-    return cleaned[:200]
+    # The cap is a sanity bound, not the security control -- the origin checks above are.
+    # It was 200, which silently TRUNCATED an /oauth/authorize round trip: that URL carries
+    # a client_id, a redirect_uri, a 43-character PKCE challenge, a scope and a state, and
+    # comfortably exceeds 200 characters. A truncated one is not refused, it is followed,
+    # and the user lands on a mangled consent request having already signed in.
+    return cleaned[:1500]
 
 
 def verify_id_token(credential, csrf_cookie, csrf_field):

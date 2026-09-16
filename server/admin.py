@@ -79,7 +79,11 @@ summary{cursor:pointer;font:11px/1.4 ui-monospace,Menlo,monospace;color:var(--ac
 pre{background:var(--raised);border:1px solid var(--line);border-radius:6px;padding:9px;
 font-size:11px;line-height:1.45;overflow-x:auto;margin:6px 0 0;max-height:280px}
 form.tri{display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-top:8px}
-select,input[type=text]{padding:5px 7px;border:1px solid var(--line);border-radius:6px;
+form.issue{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:8px 0 14px}
+form.inline{display:inline}
+form.issue button,form.inline button{padding:6px 11px;border:1px solid var(--line);
+  border-radius:6px;background:var(--card);color:var(--fg);cursor:pointer;font:inherit}
+select,input[type=text],input[type=email]{padding:5px 7px;border:1px solid var(--line);border-radius:6px;
 background:var(--bg);color:var(--fg);font:12px/1 inherit}
 input[type=text]{min-width:180px}
 button.go{padding:6px 11px;border:1px solid var(--accent);background:var(--accent);
@@ -288,12 +292,31 @@ def _users(accounts):
         f'<td class="n">{a["cpu"]:.1f}s</td><td class="n">{a["reports"]}</td>'
         f'<td>{_e(_ago(a["last_seen"]))}</td><td>{_e(_ago(a["created_at"]))}</td></tr>'
         for a in accounts]
+    issued = [
+        f'<tr><td>{_e(p["email"])}<div class="meta">{_e(p["account_id"])}</div></td>'
+        f'<td>{_e(_ago(p["password_set_at"]))}</td>'
+        f'<td><form method="post" action="/admin/password" class="inline">'
+        f'<input type="hidden" name="email" value="{_e(p["email"])}">'
+        f'<input type="hidden" name="action" value="clear">'
+        f'<button type="submit">Remove</button></form></td></tr>'
+        for p in store.password_accounts()]
     return f"""
 <p class="lede">Newest first. An account with zero calls signed up and never connected the
 server &mdash; that is an onboarding failure, not a user.</p>
 <h2>Accounts</h2>
 {_table([("Account", ""), ("Tier", ""), ("Keys", "n"), ("Calls", "n"), ("CPU", "n"),
          ("Reports", "n"), ("Last call", ""), ("Joined", "")], rows, "No accounts yet.")}
+<h2>Password sign-ins</h2>
+<p class="lede">Issued by hand, for a directory reviewer or anyone without Google. The
+address signs in at <code>/login</code>. Creates the account if the address is new.
+Minimum {store.MIN_PASSWORD_LENGTH} characters; it is hashed on the way in and cannot be
+shown again.</p>
+<form method="post" action="/admin/password" class="issue">
+  <input type="email" name="email" placeholder="reviewer@example.com" required>
+  <input type="text" name="password" placeholder="password (min {store.MIN_PASSWORD_LENGTH})" autocomplete="off" required minlength="{store.MIN_PASSWORD_LENGTH}">
+  <button type="submit">Issue</button>
+</form>
+{_table([("Address", ""), ("Set", ""), ("", "")], issued, "No passwords issued.")}
 """
 
 
@@ -316,6 +339,19 @@ traffic, not its contents.</p>
 """
 
 
+def _waitlist(rows):
+    """Who wants Premium. The one list that says whether building it is worth it, which
+    is why it is here and not only in the database."""
+    body = [f'<tr><td>{_e(r["email"])}</td>'
+            f'<td>{_e(r["display_name"] or (r["account_id"] or "— not signed up"))}</td>'
+            f'<td>{_e(r["source"] or "")}</td><td>{_e(_ago(r["created_at"]))}</td></tr>'
+            for r in rows]
+    return (f'<p class="sub">{len(rows)} on the list. Export: '
+            f'<code>sqlite3 service.sqlite "SELECT email FROM waitlist"</code></p>'
+            + _table([("Email", ""), ("Account", ""), ("Source", ""), ("Joined", "")],
+                     body, empty="Nobody yet. The button is on /pricing."))
+
+
 def console(account, message=None):
     overview = store.admin_overview()
     body = "".join([
@@ -324,6 +360,7 @@ def console(account, message=None):
         f'<button data-tab="feedback">Feedback ({overview["feedback_open"]})</button>',
         '<button data-tab="users">Users</button>',
         '<button data-tab="calls">Calls</button>',
+        f'<button data-tab="waitlist">Waitlist ({store.waitlist_count()})</button>',
         "</div>",
         f'<div class="note">{_e(message)}</div>' if message else "",
         f'<div class="panel" id="tab-overview" hidden>'
@@ -332,6 +369,7 @@ def console(account, message=None):
         f'{_feedback(store.list_feedback(limit=200), store.feedback_themes(), store.feedback_counts())}</div>',
         f'<div class="panel" id="tab-users" hidden>{_users(store.admin_accounts())}</div>',
         f'<div class="panel" id="tab-calls" hidden>{_calls(store.admin_recent_calls())}</div>',
+        f'<div class="panel" id="tab-waitlist" hidden>{_waitlist(store.waitlist_rows())}</div>',
     ])
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'

@@ -137,22 +137,59 @@ def test_batch_requests_work(client, key):
 
 # ---------------------------------------------------------------- auth
 
-def test_tool_call_without_a_key_is_refused_with_instructions(client):
-    err = call(client, "describe_coverage", {}, key=None)["error"]
-    assert err["code"] == app_mod.UNAUTHENTICATED
-    assert "signup" in err["data"]["how_to_fix"]
+def _unauth(client, key=None, name="describe_coverage"):
+    """POST a tool call and return the raw response, not the parsed JSON-RPC body.
+
+    An unauthenticated tool call is now an HTTP 401 with a WWW-Authenticate challenge, not
+    a JSON-RPC error inside a 200. That distinction is the whole of lazy authentication:
+    a 200 carrying an auth error is read by the model as a tool RESULT, so it prints
+    "missing or invalid API key" into the conversation and moves on, leaving the user no
+    way to sign in. Only a transport-level 401 makes a client pause, run OAuth and retry.
+    """
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    return client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                     "params": {"name": name, "arguments": {}}},
+                       headers=headers)
 
 
-def test_a_wrong_key_is_refused(client):
-    assert call(client, "describe_coverage", {}, key="sk_live_nope")["error"]["code"] \
-        == app_mod.UNAUTHENTICATED
+def test_tool_call_without_a_key_is_challenged_not_merely_refused(client):
+    r = _unauth(client)
+    assert r.status_code == 401
+    challenge = r.headers.get("www-authenticate", "")
+    assert challenge.startswith("Bearer "), challenge
+    # The chain a client follows to find where to sign in. Without resource_metadata it
+    # has nowhere to go and reports "couldn't reach the MCP server".
+    assert "resource_metadata=" in challenge
+    assert "/.well-known/oauth-protected-resource" in challenge
+    # An API key remains a first-class path, so the body still says how to get one.
+    assert "sk_live_" in r.json()["error_description"]
+
+
+def test_a_wrong_key_is_challenged(client):
+    assert _unauth(client, key="sk_live_nope").status_code == 401
 
 
 def test_revoked_key_stops_working(client, key):
     row = store.authenticate(key)
     store.revoke_key(row["key_id"])
-    assert call(client, "describe_coverage", {}, key=key)["error"]["code"] \
-        == app_mod.UNAUTHENTICATED
+    assert _unauth(client, key=key).status_code == 401
+
+
+def test_the_unauthenticated_knowledge_surface_survives_the_gate(client):
+    """Lazy auth means ONLY tools/call is gated. A model should be able to learn the rules
+    before spending a credential on getting them wrong, so initialize, tools/list and the
+    knowledge surfaces must stay open."""
+    for method, params in (("initialize", {"protocolVersion": "2025-06-18",
+                                           "capabilities": {},
+                                           "clientInfo": {"name": "t", "version": "1"}}),
+                           ("tools/list", None), ("resources/list", None),
+                           ("prompts/list", None), ("ping", None)):
+        body = {"jsonrpc": "2.0", "id": 1, "method": method}
+        if params is not None:
+            body["params"] = params
+        r = client.post("/mcp", json=body)
+        assert r.status_code == 200, f"{method} was gated and should not be"
+        assert "error" not in r.json(), method
 
 
 def test_plaintext_key_is_never_stored(client, key):
@@ -187,7 +224,12 @@ def test_request_quota_returns_a_retry_time(client, key, account):
     now = time.time()
     for _ in range(quota.TIERS["free"].requests_per_hour):
         store.record_usage(key_id, account, 0.01, now - 60)
-    err = call(client, "describe_coverage", {}, key=key)["error"]
+    # A BILLABLE tool, because this is the backtest ceiling. describe_coverage no longer
+    # spends it -- which is the point of the split, and would make this test pass for the
+    # wrong reason if it were left here.
+    err = call(client, "run_backtest", {"spec": {
+        "structure": "iron_fly", "entry_time": "09:30",
+        "params": {"pct_width": 1.5, "entry_dte": 4}}}, key=key)["error"]
     assert err["code"] == app_mod.QUOTA_EXCEEDED
     assert err["data"]["limit"] == "requests_per_hour"
     assert err["data"]["retry_after_seconds"] > 0
@@ -248,7 +290,9 @@ def test_extra_keys_share_one_quota(client, key, account):
     for _ in range(3):
         call(client, "describe_coverage", {}, key=key)
     q = call(client, "describe_coverage", {}, key=second)["result"]["structuredContent"]["quota"]
-    assert q["requests_used"] == 4
+    # Asserted on the meter these calls actually spend; the property is that a second key
+    # draws on the same account, not which of the account's meters moves.
+    assert q["metadata_requests_used"] == 4
     assert q["metered_on"] == "account"
 
 
@@ -262,12 +306,60 @@ def test_forwarded_ip_is_ignored_unless_a_proxy_is_declared(client, monkeypatch)
     assert codes[-1] == 429
 
 
-def test_every_tool_costs_quota_not_only_run_backtest(client, key, account):
-    """describe_coverage still queries ClickHouse; metering only run_backtest left it free."""
-    before = store.usage_since(account, 0)[0]
+def test_every_tool_is_metered_but_only_engine_work_spends_the_backtest_allowance(
+        client, key, account):
+    """Two properties at once, and they used to be in conflict.
+
+    Every tool must be METERED — describe_coverage still queries ClickHouse, and metering
+    only run_backtest left it free. But metadata must not spend the BACKTEST allowance:
+    the server instructions tell a model to read coverage and methodology before running
+    anything, so charging those to the hundred-per-hour backtest budget made following the
+    instructions cost two thirds of the user's runs, and then reported the metadata calls
+    back to them as "backtests used".
+    """
     call(client, "describe_coverage", {}, key=key)
     call(client, "search", {"query": "costs"}, key=key)
-    assert store.usage_since(account, 0)[0] == before + 2
+    billable, metadata, cpu, _pts = store.usage_since(account, 0)
+    assert metadata == 2, "cheap tools must still be counted"
+    assert billable == 0, "reading the rules must not spend the backtest allowance"
+    assert cpu > 0, "and they are still charged the CPU they actually cost"
+
+
+def test_a_backtest_does_spend_the_backtest_allowance(client, key, account):
+    call(client, "run_backtest", {"spec": {
+        "structure": "iron_fly", "entry_time": "09:30",
+        "params": {"pct_width": 1.5, "entry_dte": 4}}}, key=key)
+    billable, metadata, _cpu, _pts = store.usage_since(account, 0)
+    assert (billable, metadata) == (1, 0)
+
+
+def test_exhausting_the_backtest_allowance_leaves_metadata_callable(client, key, account):
+    """The refusal says the metadata tools still work; this is that promise, enforced.
+
+    A user out of backtests can still ask what the coverage is and read the methodology —
+    which is exactly what they need in order to plan the next hour's runs.
+    """
+    key_id = store.list_keys(account)[0]["key_id"]
+    for _ in range(quota.TIERS["free"].requests_per_hour):
+        store.record_usage(key_id, account, 0.0, billable=True)
+
+    refused = call(client, "run_backtest", {"spec": {
+        "structure": "iron_fly", "entry_time": "09:30",
+        "params": {"pct_width": 1.5, "entry_dte": 4}}}, key=key)
+    assert refused["error"]["data"]["limit"] == "requests_per_hour"
+
+    allowed = call(client, "describe_coverage", {}, key=key)
+    assert "error" not in allowed
+
+
+def test_metadata_has_its_own_ceiling_so_a_looping_client_is_still_stopped(
+        client, key, account):
+    """Separating the counters must not turn the cheap tools into an unmetered surface."""
+    key_id = store.list_keys(account)[0]["key_id"]
+    for _ in range(quota.TIERS["free"].metadata_requests_per_hour):
+        store.record_usage(key_id, account, 0.0, billable=False)
+    refused = call(client, "describe_coverage", {}, key=key)
+    assert refused["error"]["data"]["limit"] == "metadata_requests_per_hour"
 
 
 # ---------------------------------------------------------------- retention
@@ -417,6 +509,13 @@ def test_report_renders_and_leads_with_the_honesty_panel(client, key):
     # appears as a JS constant as well as an xmlns attribute, since the charts build
     # their elements with createElementNS.
     assert "http://" not in body.replace("http://www.w3.org/2000/svg", "")
+    # url(data:...) is INLINE, not a fetch -- the fonts are embedded as base64 so the
+    # document works offline and so a shared report never tells a font host the IP of
+    # whoever opened it. Every fetching form is still banned; only the data: form is not.
+    # Two url() forms fetch NOTHING and are excluded before the check: url(data:...)
+    # is an inline base64 font, and url(#id) is a same-document SVG reference to a
+    # <defs> gradient. Every form that would actually hit the network is still banned.
+    body = body.replace("url(data:", "INLINED_DATA_URI:").replace("url(#", "SAME_DOC_REF:")
     for fetching in ("<link", "<script src", "<img", "<iframe", "@import", "url("):
         assert fetching not in body, f"report would fetch something: {fetching}"
 
@@ -449,9 +548,10 @@ def test_usage_metering_survives_the_migration_column_order(monkeypatch, tmp_pat
     monkeypatch.setattr(store, "DB_PATH", db)
 
     store.record_usage("key_x", "acc_x", 1.5, now=1000.0)
-    store.record_usage("key_x", "acc_x", 2.5, now=1001.0)
-    n, cpu, pts = store.usage_since("acc_x", 0)
-    assert n == 2, "requests were not attributed to the account"
+    store.record_usage("key_x", "acc_x", 2.5, now=1001.0, billable=False)
+    billable, metadata, cpu, pts = store.usage_since("acc_x", 0)
+    assert billable == 1, "backtests were not attributed to the account"
+    assert metadata == 1, "metadata calls were not attributed to the account"
     assert cpu == pytest.approx(4.0), "CPU seconds were not attributed to the account"
     assert pts == 0, "price points defaulted wrong on a pre-migration database"
 
@@ -617,7 +717,8 @@ def test_a_bad_key_is_still_refused_under_every_header(client):
             "params": {"name": "explain_methodology", "arguments": {}}}
     for header in ("Authorization", "X-API-Key", "X-Stratify-Key", "Api-Key"):
         r = client.post("/mcp", json=call, headers={header: "sk_live_not_a_real_key"})
-        assert r.json()["error"]["code"] == app_mod.UNAUTHENTICATED, header
+        assert r.status_code == 401, header
+        assert "resource_metadata=" in r.headers.get("www-authenticate", ""), header
 
 
 def test_url_embedded_key_route_is_disabled_by_default(client):

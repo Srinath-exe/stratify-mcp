@@ -32,9 +32,9 @@ def rich():
 
 
 def _rows(d):
-    """[date, pnl_rupees, equity_rupees, drawdown_rupees] -- the columnar form the curve
-    is returned in, because repeating four key names 246 times was a quarter of the
-    response and then doubled by the MCP envelope."""
+    """[date, pnl_rupees, equity_rupees, drawdown_rupees, margin_rupees] -- the columnar
+    form the curve is returned in, because repeating five key names 246 times would be a
+    third of the response and then doubled by the MCP envelope."""
     assert d["equity_curve"]["columns"] == detail.EQUITY_COLUMNS
     return d["equity_curve"]["rows"]
 
@@ -130,3 +130,32 @@ def test_no_trades_is_not_a_crash():
         trades = []
     d = detail.build(_Empty())
     assert d["equity_curve"]["rows"] == [] and d["price_points_released"] == 0
+
+
+def test_curve_carries_the_margin_one_lot_blocked(rich):
+    """Per-trade rows are capped and trimmed; the curve carries every trade. Without a
+    margin figure on each point nothing downstream can size the WHOLE series, so a capital
+    view could only be computed over the released sample and would quietly describe a
+    shorter, different strategy."""
+    _, _, d = rich
+    i = detail.EQUITY_COLUMNS.index("margin_rupees")
+    rows = _rows(d)
+    assert all(len(r) == len(detail.EQUITY_COLUMNS) for r in rows)
+    assert all(isinstance(r[i], (int, float)) and r[i] >= 0 for r in rows)
+
+
+def test_the_exit_note_never_contradicts_the_row_it_sits_on(rich):
+    """It did. `exit_prices is None` was read before the exit reason, so rows whose reason
+    was EXPIRY and whose legs carried an exit price of 0.00 were labelled "closed on a
+    stop or target: there is no per-leg price to report" -- a sentence disagreeing with
+    the two fields either side of it."""
+    _, _, d = rich
+    for t in d["trades"]:
+        note = t.get("exit_price_note")
+        if not note:
+            continue
+        priced = any(l.get("exit_price") is not None for l in t.get("legs") or [])
+        if "no per-leg price" in note:
+            assert not priced, f"trade {t['n']} reports leg prices under a note denying them"
+        if t["exit_reason"] == "EXPIRY":
+            assert "settled" in note, f"trade {t['n']} settled but the note says otherwise"

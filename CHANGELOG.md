@@ -11,6 +11,29 @@ point at the methodology version.
 
 ## [Unreleased]
 
+### Added
+- **OAuth 2.1 authorization server** (`server/mcpauth.py`): PKCE S256 required, dynamic
+  client registration, client-ID metadata documents, exact redirect matching with the
+  RFC 8252 loopback exception, single-use codes with replay detection, refresh rotation
+  with reuse detection. Unauthenticated `tools/call` now answers 401 + `WWW-Authenticate`.
+- Admin-issued password sign-in at `/login`, for directory reviewers. Not a signup.
+- Index indicators as entry gates in the open protocol: `rsi_N`, `close_vs_sma_N_pct`,
+  `close_vs_ema_N_pct`, `ema_F_vs_S_pct`, `sma_F_vs_S_pct`, N 2..250, all computed on the
+  previous close so a gate can never see its own day.
+- The site on the report's design system; `/explore`, `/pricing`, a waitlist, the mark.
+- One report renderer (`server/reportui.py`) for `/r/{token}` and `format: "full"`, with
+  a browser-side capital view and touch-friendly info overlays.
+- `/readyz` (ClickHouse window + service-DB write probe) beside the dependency-free
+  `/healthz`; `server/backup.sh` (restore-tested) and `server/watchdog.sh`.
+- Backtests and metadata calls metered separately (`metadata_requests_per_hour`), so
+  reading coverage and methodology never spends the backtest allowance.
+- Tool annotations (`title`, `readOnlyHint`, `destructiveHint`) on every tool.
+
+### Fixed
+- Every page handed out the MCP URL on the *web* host, which worked and silently broke
+  OAuth discovery. `STRATIFY_PUBLIC_MCP_URL` is authoritative.
+- Reports older than 30 days are purged; a purged link answers 410 with a page.
+
 ## [0.1.2] — 2026-09-15
 
 ### Added

@@ -75,6 +75,11 @@ font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:11px;
 padding:6px 4px 2px;box-shadow:var(--shadow);margin-bottom:12px;overflow-x:auto}
 .panel svg{display:block;min-width:460px;width:100%}
+.sct{width:100%;height:auto;display:block}
+.sct .sg{fill:var(--good);opacity:.62}
+.sct .sb{fill:var(--crit);opacity:.62}
+.sct .sz{stroke:var(--line);stroke-width:1}
+.sct .sl{fill:var(--muted);font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .scroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line);
 border-radius:11px;box-shadow:var(--shadow)}
 table{width:100%;border-collapse:collapse;font-size:13px}
@@ -326,6 +331,58 @@ def _honesty_table(h):
     return "".join(rows)
 
 
+# How many trades are worth listing individually. THE REST ARE THE SCATTER'S JOB.
+#
+# This page used to print every released trade as a table row. At 300 rows that is a
+# 35,000-pixel document -- thirty-five metres of scrolling -- and nobody has ever read
+# row 180. The full report solved this months ago by drawing the trades instead; this
+# page, which is the one people actually SHARE, never got the fix.
+#
+# The extremes are the rows that carry information: the trades that made the result and
+# the ones that nearly unmade it. Everything else is a dot.
+EXTREMES = 8
+
+
+def _trade_scatter(trades):
+    """Every released trade as one dot: when it happened, what it returned on margin.
+
+    Drawn as inline SVG rather than handed to a chart library, because this document has
+    to keep working as a saved file with no network -- somebody will download it, and a
+    report that needs a CDN to render its own evidence is not evidence.
+    """
+    pts = [t for t in trades if t.get("return_on_margin") is not None]
+    if len(pts) < 4:
+        return ""
+    w, h, pad = 900, 260, 34
+    roms = [t["return_on_margin"] for t in pts]
+    lo, hi = min(roms), max(roms)
+    span = (hi - lo) or 1.0
+    # Zero is a real line on this chart, not a nicety: the eye needs to see which side of
+    # it a cluster sits on, and a scale that omits it can hide an all-losing strategy.
+    lo, hi = min(lo, 0.0), max(hi, 0.0)
+    span = (hi - lo) or 1.0
+    zero = pad + (hi - 0.0) / span * (h - 2 * pad)
+    dots = []
+    for i, t in enumerate(pts):
+        x = pad + (i / max(1, len(pts) - 1)) * (w - 2 * pad)
+        y = pad + (hi - t["return_on_margin"]) / span * (h - 2 * pad)
+        good = t["return_on_margin"] >= 0
+        dots.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.6" '
+                    f'class="{"sg" if good else "sb"}"><title>'
+                    f'{_e(t.get("entry"))} · {_pct(t["return_on_margin"], 2)} · '
+                    f'{_money(t.get("pnl_rupees"))}</title></circle>')
+    return (
+        f'<div class="scroll"><svg class="sct" viewBox="0 0 {w} {h}" '
+        f'role="img" aria-label="every trade by return on margin">'
+        f'<line x1="{pad}" y1="{zero:.1f}" x2="{w - pad}" y2="{zero:.1f}" class="sz"/>'
+        f'<text x="{w - pad}" y="{zero - 6:.1f}" class="sl" text-anchor="end">0%</text>'
+        f'<text x="{pad}" y="{pad - 12:.1f}" class="sl">{_pct(hi, 1)}</text>'
+        f'<text x="{pad}" y="{h - pad + 16:.1f}" class="sl">{_pct(lo, 1)}</text>'
+        f'{"".join(dots)}</svg></div>'
+        f'<p class="small muted">Each dot is one trade, oldest on the left, by return on '
+        f'margin. Hover for the date and the rupee result. {len(pts)} trades shown.</p>')
+
+
 def _trades_table(trades, show_prices):
     if not trades:
         return ""
@@ -350,6 +407,25 @@ def _trades_table(trades, show_prices):
             f'<td class="n">{_pct(rom, 2) if rom is not None else "—"}</td>{legs}</tr>')
     return (f'<div class="scroll"><table><thead>{head}</thead>'
             f'<tbody>{"".join(body)}</tbody></table></div>')
+
+
+def _extremes(trades, show_prices):
+    """The best and worst trades, and nothing in between.
+
+    A reader scanning a strategy wants two things a full listing buries: what the good
+    case looked like, and how bad the bad case got. Those are the top and bottom of the
+    distribution. The middle is the scatter above.
+    """
+    ranked = sorted((t for t in trades if t.get("pnl_rupees") is not None),
+                    key=lambda t: t["pnl_rupees"])
+    if len(ranked) <= EXTREMES * 2:
+        return _trades_table(ranked, show_prices)
+    worst, best = ranked[:EXTREMES], ranked[-EXTREMES:][::-1]
+    return (f'<h3>The {EXTREMES} worst</h3>{_trades_table(worst, show_prices)}'
+            f'<h3>The {EXTREMES} best</h3>{_trades_table(best, show_prices)}'
+            f'<p class="small muted">{len(ranked)} trades were released with this result; '
+            f'the {EXTREMES * 2} at the extremes are listed. Every aggregate on this page '
+            f'covers all of them.</p>')
 
 
 def render(payload, backtest_id, report_url=None):
@@ -379,7 +455,7 @@ def render(payload, backtest_id, report_url=None):
     }
 
     stats = "".join([
-        _stat("Net P&L", _money(pnl), f'{s.get("n_trades", "?")} trades',
+        _stat("Net P&L", _money(pnl), f'{s.get("n_trades", "?")} trades · one lot',
               "g" if (pnl or 0) >= 0 else "b"),
         _stat("Win rate", _pct(s.get("win_rate"), 1), "share of trades in profit"),
         _stat("Max drawdown", _money(s.get("max_drawdown_rupees")), "peak to trough", "b"),
@@ -403,6 +479,10 @@ def render(payload, backtest_id, report_url=None):
         return f'<h2>{title}</h2><div class="panel" id="{cid}"></div>' if when else ""
 
     show_prices = bool(detail.get("prices_included"))
+    trades_section = ""
+    if trades:
+        trades_section = ("<h2>Every trade</h2>" + _trade_scatter(trades)
+                          + _extremes(trades, show_prices))
     trunc = detail.get("truncation")
 
     body = f"""<div class="wrap">
@@ -421,6 +501,10 @@ def render(payload, backtest_id, report_url=None):
 <div class="verdict {vclass}">
   <span class="vt">Verdict · {_e(verdict.replace("_", " "))}</span>
   <h3>{_money(pnl)} over {s.get("n_trades", "?")} trades, health {health}/100</h3>
+  <p class="small muted">One lot throughout, uncompounded. A capital model applied to
+  these same trades will not match this figure &mdash; through a deep drawdown it can
+  reach the opposite sign, which is a fact about position sizing rather than a
+  disagreement about the trades.</p>
   <p>{_e(h.get("explanation", ""))}</p>
 </div>
 
@@ -445,7 +529,7 @@ def render(payload, backtest_id, report_url=None):
 {f"<h2>What this does not show</h2><ul>{dont}</ul>" if dont else ""}
 {f"<h2>Sensible next step</h2><ul>{nxt}</ul>" if nxt else ""}
 
-{f'<h2>Trades</h2>{_trades_table(trades, show_prices)}' if trades else ""}
+{trades_section}
 {f'<p class="note">{_e(trunc)}</p>' if trunc else ""}
 
 {f"<h2>Caveats carried by this run</h2><ul>{notes}</ul>" if notes else ""}

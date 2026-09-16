@@ -132,3 +132,21 @@ def evaluate(gate_name, bias_name, entry_date, entry_minute):
     bias = ("neutral" if bias_name == "neutral"
             else prod.BIASES[bias_name](frame, entry_date))
     return allowed, bias
+
+
+def overlay_allows(overlay, entry_date, entry_minute):
+    """-> True unless the spec's vol overlay blocks this cycle.
+
+    Production's `overlay_allows_entry` on the SAME truncated frame the gates and biases
+    read, so the 20-day realised vol ends at the entry minute -- the last return in the
+    window is against the spot at entry, not the day's close (the research applies the
+    filter with `entry_time` for exactly this reason). An unknown vol (not enough history)
+    lets the trade through, as production does.
+    """
+    if not overlay:
+        return True
+    frame = frame_at(entry_date, entry_minute)
+    if frame.empty:
+        return True
+    allowed, _rvol, _cut = _production().overlay_allows_entry(frame, entry_date, overlay)
+    return bool(allowed)

@@ -262,12 +262,21 @@ def test_report_is_a_publishable_document(client):
     assert out["result"]["structuredContent"]["mime_type"] == "text/html"
     # An artifact sandbox blocks every one of these. If any appears, the published page
     # renders unstyled or half-drawn and the user sees a broken report.
+    # url(data:...) is INLINE, not a fetch. See the same note in test_server.py.
+    # Two url() forms fetch NOTHING and are excluded before the check: url(data:...)
+    # is an inline base64 font, and url(#id) is a same-document SVG reference to a
+    # <defs> gradient. Every form that would actually hit the network is still banned.
+    doc = doc.replace("url(data:", "INLINED_DATA_URI:").replace("url(#", "SAME_DOC_REF:")
     for fetching in ("<link", "<script src", "<img", "<iframe", "@import", "url("):
         assert fetching not in doc
     assert "http://" not in doc.replace("http://www.w3.org/2000/svg", "")
     # Theme-aware in all three states: explicit light, explicit dark, and the unstamped
     # default where only prefers-color-scheme separates them.
-    assert "prefers-color-scheme:dark" in doc and "[data-theme=dark]" in doc
+    # The report is a COMMITTED DARK document now -- the inspo design system has no light
+    # palette, so a prefers-color-scheme block would be a mode nobody designed. What this
+    # assertion really protects is that the page survives outside a dark viewer, and for a
+    # document people PDF that means a print stylesheet (DESIGN.md 8.3).
+    assert "@media print" in doc
 
 
 def test_report_leads_with_the_evidence_not_the_pnl(client):
@@ -407,9 +416,19 @@ def test_every_surface_shares_one_design_system(client):
     key = signup(client)
     out = rpc(client, key, "build_report", {"backtest_id": _backtest(client, key)})
     doc = out["result"]["structuredContent"]["document"]
-    assert design.TOKENS.split("\n")[0] in doc
+    # The CHART primitives are the shared thing, and they still are -- design.py's
+    # CHART_CSS is embedded verbatim. What is no longer shared is design.TOKENS: the
+    # report moved to the inspo design system (dark ground, Instrument Serif) while the
+    # internal catalogue is still the light document. Asserting the old palette here
+    # would now assert that the redesign never happened.
+    #
+    # The intent survives intact: there is still exactly ONE chart stylesheet, and the
+    # bridge in reportlab.py maps its variables onto whichever palette the surface uses.
+    # That bridge is what this now checks.
     for primitive in (".ln{stroke:var(--accent)", ".bb{fill:var(--crit)", ".tk{fill:var(--faint)"):
-        assert primitive in doc
+        assert primitive in doc, f"chart primitive {primitive} missing -- two stylesheets"
+    assert "--good:var(--pnl-up)" in doc, "the catalogue palette is not bridged"
+    assert design.MARK_HTML in doc
 
 
 # ---------------------------------------------------------------- reported by a user
@@ -492,6 +511,11 @@ def test_the_template_is_readable_and_self_contained(client):
     assert out["contents"][0]["mimeType"] == "text/html;profile=mcp-app"
     assert doc.startswith("<!doctype html>")
     # The iframe CSP defaults to deny-everything. Anything fetched here simply fails.
+    # url(data:...) is INLINE, not a fetch. See the note in test_server.py.
+    # Two url() forms fetch NOTHING and are excluded before the check: url(data:...)
+    # is an inline base64 font, and url(#id) is a same-document SVG reference to a
+    # <defs> gradient. Every form that would actually hit the network is still banned.
+    doc = doc.replace("url(data:", "INLINED_DATA_URI:").replace("url(#", "SAME_DOC_REF:")
     for fetching in ("<link", "<script src", "<img", "@import", "url("):
         assert fetching not in doc
     assert "http://" not in doc.replace("http://www.w3.org/2000/svg", "")

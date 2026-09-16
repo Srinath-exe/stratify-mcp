@@ -8,8 +8,10 @@ KEYS ARE NEVER STORED. Only a peppered scrypt hash of the key is kept, and the p
 lives outside the database in the environment, so a stolen database file does not yield
 working keys. The plaintext is shown exactly once, at creation.
 """
+import base64
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import sqlite3
@@ -21,6 +23,12 @@ DB_PATH = Path(os.getenv("STRATIFY_SERVICE_DB",
 # A missing pepper is a configuration error in production, but a fixed development value
 # keeps tests hermetic. The production deployment must set this.
 PEPPER = os.getenv("STRATIFY_KEY_PEPPER", "dev-pepper-not-for-production").encode()
+
+# Token prefixes. Distinct from sk_live_ so that a glance at a log line, a bug report or a
+# support question says which credential is in play -- and so `authenticate()` can refuse
+# an OAuth token outright rather than hashing it against every API key.
+OAUTH_ACCESS_PREFIX = "mcp_at_"
+OAUTH_REFRESH_PREFIX = "mcp_rt_"
 
 KEY_PREFIX = "sk_live_"
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 2 ** 14, 8, 1
@@ -38,6 +46,61 @@ CREATE TABLE IF NOT EXISTS api_keys (
   key_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, key_hash BLOB NOT NULL,
   last4 TEXT NOT NULL, created_at REAL NOT NULL, revoked_at REAL);
 CREATE INDEX IF NOT EXISTS ix_keys_account ON api_keys(account_id);
+
+-- ---------------------------------------------------------------- OAuth 2.1
+--
+-- The authorization server's state. It exists because ChatGPT, the Gemini web app and
+-- Anthropic's Connectors Directory all refuse a bearer API key: OAuth is the only way in.
+-- API keys are unaffected and remain the path for CLI clients, which handle a header fine.
+--
+-- EVERY SECRET HERE IS STORED AS A PEPPERED HASH, exactly like an API key: authorization
+-- codes, access tokens, refresh tokens and client secrets. A database that leaks must not
+-- hand over live credentials, and there is no reason to keep the plaintext -- these are
+-- only ever compared against something the caller presents.
+CREATE TABLE IF NOT EXISTS oauth_clients (
+  client_id TEXT PRIMARY KEY,
+  client_secret_hash BLOB,          -- NULL for a public client (PKCE only)
+  redirect_uris TEXT NOT NULL,      -- JSON array
+  client_name TEXT,
+  client_uri TEXT,
+  created_at REAL NOT NULL,
+  -- Dynamic registration is open by necessity (the spec requires it and ChatGPT mandates
+  -- it), so this records where each registration came from in order to rate-limit it.
+  registered_ip_hash TEXT);
+
+-- Authorization codes. Single-use and short-lived; `consumed_at` is kept rather than the
+-- row deleted, because replay of an already-spent code is an attack signal and OAuth 2.1
+-- requires revoking the tokens it produced when it is seen.
+CREATE TABLE IF NOT EXISTS oauth_codes (
+  code_hash BLOB PRIMARY KEY,
+  client_id TEXT NOT NULL, account_id TEXT NOT NULL,
+  redirect_uri TEXT NOT NULL, code_challenge TEXT NOT NULL,
+  scope TEXT NOT NULL, expires_at REAL NOT NULL,
+  created_at REAL NOT NULL, consumed_at REAL,
+  family_id TEXT NOT NULL);
+
+-- Access and refresh tokens. `family_id` ties a refresh chain together so that detecting
+-- one replayed token can revoke everything descended from the same authorization -- the
+-- OAuth 2.1 rotation requirement for public clients, which every client here is.
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  token_hash BLOB PRIMARY KEY,
+  kind TEXT NOT NULL,               -- 'access' | 'refresh'
+  client_id TEXT NOT NULL, account_id TEXT NOT NULL,
+  scope TEXT NOT NULL, family_id TEXT NOT NULL,
+  created_at REAL NOT NULL, expires_at REAL,
+  revoked_at REAL, rotated_at REAL);
+CREATE INDEX IF NOT EXISTS ix_oauth_tok_family ON oauth_tokens(family_id);
+CREATE INDEX IF NOT EXISTS ix_oauth_tok_account ON oauth_tokens(account_id, kind);
+
+-- ---------------------------------------------------------------- waitlist
+--
+-- The premium tier has no price, no date and no promise beyond a description, so the
+-- only honest thing to collect is "tell me when it exists". One row per address; the
+-- account is attached when there is one so the two can be joined later without asking
+-- anyone to type an email they already gave us.
+CREATE TABLE IF NOT EXISTS waitlist (
+  email TEXT PRIMARY KEY, account_id TEXT, created_at REAL NOT NULL,
+  ip_hash TEXT, source TEXT, note TEXT);
 CREATE TABLE IF NOT EXISTS usage (
   key_id TEXT NOT NULL, account_id TEXT NOT NULL, ts REAL NOT NULL,
   cpu_seconds REAL NOT NULL DEFAULT 0,
@@ -45,6 +108,12 @@ CREATE TABLE IF NOT EXISTS usage (
 CREATE TABLE IF NOT EXISTS signups (
   ts REAL NOT NULL, ip_hash TEXT NOT NULL, account_id TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_signups ON signups(ip_hash, ts);
+-- Password sign-in attempts, kept for throttling only: hashed address, hashed email,
+-- outcome. Never the password, never the plain email.
+CREATE TABLE IF NOT EXISTS logins (
+  ts REAL NOT NULL, ip_hash TEXT NOT NULL, email_hash TEXT NOT NULL, ok INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_logins_ip ON logins(ip_hash, ts);
+CREATE INDEX IF NOT EXISTS ix_logins_email ON logins(email_hash, ts);
 CREATE TABLE IF NOT EXISTS inflight (
   token TEXT PRIMARY KEY, account_id TEXT NOT NULL, tier TEXT NOT NULL DEFAULT 'free',
   started REAL NOT NULL);
@@ -139,6 +208,11 @@ CREATE INDEX IF NOT EXISTS ix_feedback_account ON feedback(account_id, ts);
 # explicitly; they are idempotent and cheap enough to run on every connection.
 MIGRATIONS = [
     ("accounts", "session_token", "ALTER TABLE accounts ADD COLUMN session_token TEXT"),
+    # Password sign-in is ISSUED, not self-served: only the admin console sets one. It
+    # exists so a reviewer at a directory can be handed credentials that work without a
+    # Google account or a second factor we hold. NULL for everyone else.
+    ("accounts", "password_hash", "ALTER TABLE accounts ADD COLUMN password_hash TEXT"),
+    ("accounts", "password_set_at", "ALTER TABLE accounts ADD COLUMN password_set_at REAL"),
     ("inflight", "tier", "ALTER TABLE inflight ADD COLUMN tier TEXT NOT NULL DEFAULT 'free'"),
     ("usage", "account_id", "ALTER TABLE usage ADD COLUMN account_id TEXT NOT NULL DEFAULT ''"),
     # Real option prints returned to the caller. Rich results made the exposure real
@@ -168,6 +242,12 @@ MIGRATIONS = [
     # displayed and filtered without parsing the spec.
     ("strategy_book", "methodology_version",
      "ALTER TABLE strategy_book ADD COLUMN methodology_version INTEGER"),
+    # Does this call spend the BACKTEST allowance, or the much larger metadata one? Rows
+    # written before this migration default to 1, which is what they were counted as when
+    # they were written -- backfilling them to 0 would retroactively hand back quota that
+    # was already enforced.
+    ("usage", "billable",
+     "ALTER TABLE usage ADD COLUMN billable INTEGER NOT NULL DEFAULT 1"),
 ]
 
 # Indexes that depend on a migrated column. They cannot live in SCHEMA: executescript runs
@@ -510,30 +590,42 @@ def forget_strategy(account_id, entry_id):
 
 # ---------------------------------------------------------------- usage
 
-def record_usage(key_id, account_id, cpu_seconds, now=None, price_points=0):
+def record_usage(key_id, account_id, cpu_seconds, now=None, price_points=0,
+                 billable=True):
     # Columns are NAMED, never positional. A positional INSERT here silently misattributed
     # every one of 116 usage rows once, because ALTER TABLE appends a column to the END of
     # the row and the tuple did not move with it -- so the quota was enforced against a
     # column that held an account id.
     con = connect()
     with con:
-        con.execute("INSERT INTO usage (key_id, account_id, ts, cpu_seconds, price_points) "
-                    "VALUES (?,?,?,?,?)",
+        con.execute("INSERT INTO usage (key_id, account_id, ts, cpu_seconds, "
+                    "price_points, billable) VALUES (?,?,?,?,?,?)",
                     (key_id, account_id, now if now is not None else time.time(),
-                     cpu_seconds, int(price_points or 0)))
+                     cpu_seconds, int(price_points or 0), 1 if billable else 0))
     con.close()
 
 
 def usage_since(account_id, since):
-    """Metered on the ACCOUNT, not the key. Metering per key would let anyone multiply
-    their quota by issuing more keys, which is not a limit at all."""
+    """-> (billable_calls, metadata_calls, cpu_seconds, price_points).
+
+    Metered on the ACCOUNT, not the key. Metering per key would let anyone multiply their
+    quota by issuing more keys, which is not a limit at all.
+
+    The call count is split because the two kinds are limited differently: running the
+    engine spends the backtest allowance, reading coverage or methodology spends a much
+    larger separate one. CPU and price points are NOT split -- those are real resource
+    consumption whoever caused it, and a metadata call that somehow burned a CPU-second
+    should be charged for it.
+    """
     con = connect()
     row = con.execute(
-        "SELECT count(*) n, coalesce(sum(cpu_seconds),0) cpu, "
-        "coalesce(sum(price_points),0) pts FROM usage "
+        "SELECT coalesce(sum(billable),0) billable, "
+        "       count(*) - coalesce(sum(billable),0) meta, "
+        "       coalesce(sum(cpu_seconds),0) cpu, "
+        "       coalesce(sum(price_points),0) pts FROM usage "
         "WHERE account_id=? AND ts>=?", (account_id, since)).fetchone()
     con.close()
-    return row["n"], row["cpu"], row["pts"]
+    return int(row["billable"]), int(row["meta"]), row["cpu"], row["pts"]
 
 
 def oldest_usage(account_id, since):
@@ -571,6 +663,118 @@ def signups_since(ip_hash, since):
     return row["n"]
 
 
+# ------------------------------------------------------------ issued passwords
+#
+# scrypt from the standard library, per-password salt, parameters written into the stored
+# string so they can be raised later without invalidating what exists. No new dependency:
+# a password hash is one of the few things worth being boring about.
+
+_SCRYPT = dict(n=2 ** 15, r=8, p=1)
+_DUMMY_HASH = None
+MIN_PASSWORD_LENGTH = 12
+
+
+def _scrypt(password, salt, n, r, p):
+    return hashlib.scrypt(password.encode(), salt=salt, n=n, r=r, p=p, maxmem=64 * 2 ** 20,
+                          dklen=32)
+
+
+def hash_password(password):
+    salt = secrets.token_bytes(16)
+    dk = _scrypt(password, salt, **_SCRYPT)
+    return "scrypt$%d$%d$%d$%s$%s" % (_SCRYPT["n"], _SCRYPT["r"], _SCRYPT["p"],
+                                     base64.b64encode(salt).decode(),
+                                     base64.b64encode(dk).decode())
+
+
+def check_password(password, stored):
+    """Constant-time against the stored hash. With NO stored hash it still runs a full
+    scrypt against a dummy, so an unknown email takes as long as a wrong password and
+    the response time does not say which addresses have a password."""
+    global _DUMMY_HASH
+    if stored is None:
+        if _DUMMY_HASH is None:
+            _DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
+        check_password(password, _DUMMY_HASH)
+        return False
+    try:
+        _, n, r, p, salt, dk = stored.split("$")
+        expect = base64.b64decode(dk)
+        got = _scrypt(password, base64.b64decode(salt), int(n), int(r), int(p))
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(got, expect)
+
+
+def set_password(email, password):
+    """Admin only. Creates the account if the address is new. Returns the account_id."""
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
+    account_id, _ = create_account(email)
+    con = connect()
+    with con:
+        con.execute("UPDATE accounts SET password_hash=?, password_set_at=? "
+                    "WHERE account_id=?", (hash_password(password), time.time(), account_id))
+    con.close()
+    return account_id
+
+
+def clear_password(email):
+    con = connect()
+    with con:
+        cur = con.execute("UPDATE accounts SET password_hash=NULL, password_set_at=NULL "
+                          "WHERE email=? AND password_hash IS NOT NULL", (email,))
+        n = cur.rowcount
+    con.close()
+    return n > 0
+
+
+def verify_password(email, password):
+    """-> the account row, or None. Same cost and same answer for an unknown address, an
+    address without a password, and a wrong password."""
+    con = connect()
+    row = con.execute("SELECT * FROM accounts WHERE email=?", (email,)).fetchone()
+    con.close()
+    stored = row["password_hash"] if row else None
+    if not check_password(password, stored):
+        return None
+    return row
+
+
+def password_accounts():
+    con = connect()
+    rows = con.execute("SELECT account_id, email, password_set_at FROM accounts "
+                       "WHERE password_hash IS NOT NULL ORDER BY password_set_at DESC"
+                       ).fetchall()
+    con.close()
+    return rows
+
+
+def hash_email(email):
+    return hashlib.sha256(("email:" + email.strip().lower()).encode()).hexdigest()[:32]
+
+
+def record_login(ip_hash, email, ok, now=None):
+    con = connect()
+    with con:
+        con.execute("INSERT INTO logins (ts, ip_hash, email_hash, ok) VALUES (?,?,?,?)",
+                    (now if now is not None else time.time(), ip_hash, hash_email(email),
+                     1 if ok else 0))
+    con.close()
+
+
+def login_failures_since(since, ip_hash=None, email=None):
+    con = connect()
+    if ip_hash is not None:
+        row = con.execute("SELECT count(*) n FROM logins WHERE ip_hash=? AND ok=0 AND ts>=?",
+                          (ip_hash, since)).fetchone()
+    else:
+        row = con.execute("SELECT count(*) n FROM logins WHERE email_hash=? AND ok=0 AND ts>=?",
+                          (hash_email(email), since)).fetchone()
+    con.close()
+    return row["n"]
+
+
 def hash_ip(ip):
     """Stored as a peppered hash, never in the clear: the throttle needs to recognise a
     repeat visitor, not to keep a log of who visited."""
@@ -580,7 +784,7 @@ def hash_ip(ip):
 # ---------------------------------------------------------------- retention
 
 def purge(now=None, usage_days=30, spec_body_days=30, signup_days=7,
-          call_days=30):
+          call_days=30, full_report_days=30):
     """Retention, per decision G2: spec HASHES are kept indefinitely for metering and
     dedup, spec BODIES for 30 days for debugging, then blanked. Usage rows and signup
     records age out too -- an abuse counter does not need a permanent history.
@@ -596,6 +800,8 @@ def purge(now=None, usage_days=30, spec_body_days=30, signup_days=7,
                               (now - usage_days * 86400,)).rowcount
         n_signup = con.execute("DELETE FROM signups WHERE ts < ?",
                                (now - signup_days * 86400,)).rowcount
+        # Login attempts serve the hourly throttle only; a week is already generous.
+        con.execute("DELETE FROM logins WHERE ts < ?", (now - signup_days * 86400,))
         n_spec = con.execute(
             "UPDATE results SET spec_json=?, payload_json=? "
             "WHERE created_at < ? AND spec_json != ?",
@@ -606,9 +812,33 @@ def purge(now=None, usage_days=30, spec_body_days=30, signup_days=7,
         # entries is worse than no shortlist.
         n_calls = con.execute("DELETE FROM calls WHERE ts < ?",
                               (now - call_days * 86400,)).rowcount
+        # BUILT REPORTS WERE THE ONE THING THAT GREW FOR EVER. Each row holds a complete
+        # self-contained page -- every chart inline and the webfonts base64'd into it --
+        # which measures 300-500 KB apiece. Nothing deleted them, so the service database
+        # grew by about half a megabyte per report with no ceiling, on the same disk as
+        # ClickHouse. They also outlived the result they were built from, which is purged
+        # on this same clock, so a report could still be served long after the numbers
+        # behind it had been deleted for retention. Both problems have the same fix.
+        n_reports = 0
+        try:
+            _ensure_full_reports(con)
+            n_reports = con.execute("DELETE FROM full_reports WHERE created_at < ?",
+                                    (now - full_report_days * 86400,)).rowcount
+        except sqlite3.Error:
+            pass
+    # Reclaim the pages those deletes freed. Without this SQLite keeps the file at its
+    # high-water mark, so deleting the reports would free no disk at all -- the exact
+    # problem this is here to solve.
+    if n_reports:
+        con.execute("VACUUM")
     con.close()
-    return {"usage_rows_deleted": n_usage, "signup_rows_deleted": n_signup,
-            "result_bodies_purged": n_spec, "call_rows_deleted": n_calls}
+    # Spent codes and long-dead tokens are not history worth keeping, and an
+    # authorization-server table that only grows is a disk problem with extra steps.
+    out = {"usage_rows_deleted": n_usage, "signup_rows_deleted": n_signup,
+           "result_bodies_purged": n_spec, "call_rows_deleted": n_calls,
+           "full_reports_deleted": n_reports}
+    out.update(purge_oauth(now=now))
+    return out
 
 
 # ---------------------------------------------------------------- concurrency
@@ -710,7 +940,11 @@ def get_result_by_token(token):
 def recent_results_for_account(account_id, limit=20):
     con = connect()
     rows = con.execute(
-        "SELECT r.backtest_id, r.created_at, r.spec_json FROM results r "
+        # report_token IS LOAD-BEARING and was missing. site._report_row builds the
+        # dashboard's "Open" link from it and renders no link when it is absent -- so
+        # every row on /app/reports has been unclickable since the page shipped, and the
+        # only way to reach a report was to still have the URL from the original call.
+        "SELECT r.backtest_id, r.created_at, r.spec_json, r.report_token FROM results r "
         "JOIN api_keys k USING(key_id) WHERE k.account_id=? "
         "ORDER BY r.created_at DESC LIMIT ?", (account_id, limit)).fetchall()
     con.close()
@@ -1046,3 +1280,315 @@ def full_report_quota(account_id, limit, now=None):
         return used < limit, used
     finally:
         con.close()
+
+
+# ---------------------------------------------------------------- readiness
+
+def health_probe():
+    """Prove the service database is WRITABLE, not merely readable. Raises on failure.
+
+    A SELECT is not evidence: a read-only bind mount, a full disk and a database locked by
+    a stuck writer all leave every read working while signup, key issuance and usage
+    metering fail. So this writes, reads back, and rolls the write away — leaving no row
+    behind, because a health check that accumulates state becomes its own disk problem.
+    """
+    con = connect()
+    try:
+        con.execute("BEGIN IMMEDIATE")          # takes the write lock, which is the point
+        con.execute("CREATE TABLE IF NOT EXISTS _health (k TEXT PRIMARY KEY, ts REAL)")
+        con.execute("INSERT OR REPLACE INTO _health (k, ts) VALUES ('probe', ?)",
+                    (time.time(),))
+        got = con.execute("SELECT ts FROM _health WHERE k='probe'").fetchone()
+        if got is None:
+            raise RuntimeError("wrote a probe row and read back nothing")
+        con.rollback()
+        return True
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------- OAuth 2.1 state
+#
+# Storage only. The protocol lives in mcpauth.py; this module owns the database and
+# nothing else, so that "what is persisted and how" stays answerable in one file.
+
+ACCESS_TTL = 3600.0            # an hour. Short, because refresh is cheap and rotation is
+                               # what actually limits the damage from a stolen token.
+REFRESH_TTL = 90 * 86400.0     # ninety days of unattended use before a user re-consents.
+CODE_TTL = 300.0               # five minutes: OAuth 2.1 caps codes at ten, and the only
+                               # thing happening in between is one redirect.
+
+
+def register_oauth_client(redirect_uris, client_name=None, client_uri=None,
+                          secret=None, ip_hash=None, now=None):
+    """Dynamic Client Registration. Returns the client_id.
+
+    Registration is UNAUTHENTICATED because RFC 7591 has no other mode and ChatGPT
+    requires it, so the row is cheap and anyone can create one. That is safe on its own --
+    a client id grants nothing until a USER completes a consent screen for it -- but it is
+    a free write, so the caller rate-limits by ip_hash, which is recorded here.
+    """
+    client_id = "cli_" + secrets.token_hex(16)
+    con = connect()
+    with con:
+        con.execute(
+            "INSERT INTO oauth_clients (client_id, client_secret_hash, redirect_uris, "
+            "client_name, client_uri, created_at, registered_ip_hash) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (client_id, _hash(secret) if secret else None,
+             json.dumps(list(redirect_uris)), client_name, client_uri,
+             now if now is not None else time.time(), ip_hash))
+    con.close()
+    return client_id
+
+
+def oauth_client(client_id):
+    con = connect()
+    row = con.execute("SELECT * FROM oauth_clients WHERE client_id=?",
+                      (client_id,)).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def oauth_registrations_since(ip_hash, since):
+    con = connect()
+    n = con.execute("SELECT count(*) FROM oauth_clients WHERE registered_ip_hash=? "
+                    "AND created_at>=?", (ip_hash, since)).fetchone()[0]
+    con.close()
+    return n
+
+
+def save_oauth_code(code, client_id, account_id, redirect_uri, code_challenge, scope,
+                    now=None):
+    now = time.time() if now is None else now
+    family_id = "fam_" + secrets.token_hex(12)
+    con = connect()
+    with con:
+        con.execute(
+            "INSERT INTO oauth_codes (code_hash, client_id, account_id, redirect_uri, "
+            "code_challenge, scope, expires_at, created_at, family_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (_hash(code), client_id, account_id, redirect_uri, code_challenge, scope,
+             now + CODE_TTL, now, family_id))
+    con.close()
+    return family_id
+
+
+def consume_oauth_code(code, now=None):
+    """-> (row, reason). reason is None on success, else why it was refused.
+
+    REPLAY IS REPORTED, NOT MERELY REFUSED. A code presented twice means either a broken
+    client or a stolen code, and OAuth 2.1 requires the second case be treated as
+    compromise: the caller revokes the whole token family. Deleting the row on first use
+    would make the two indistinguishable.
+    """
+    now = time.time() if now is None else now
+    con = connect()
+    row = con.execute("SELECT * FROM oauth_codes WHERE code_hash=?",
+                      (_hash(code),)).fetchone()
+    if row is None:
+        con.close()
+        return None, "unknown"
+    if row["consumed_at"] is not None:
+        con.close()
+        return dict(row), "replayed"
+    if row["expires_at"] < now:
+        con.close()
+        return dict(row), "expired"
+    with con:
+        con.execute("UPDATE oauth_codes SET consumed_at=? WHERE code_hash=?",
+                    (now, _hash(code)))
+    con.close()
+    return dict(row), None
+
+
+def save_oauth_token(token, kind, client_id, account_id, scope, family_id, now=None):
+    now = time.time() if now is None else now
+    ttl = ACCESS_TTL if kind == "access" else REFRESH_TTL
+    con = connect()
+    with con:
+        con.execute(
+            "INSERT INTO oauth_tokens (token_hash, kind, client_id, account_id, scope, "
+            "family_id, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?)",
+            (_hash(token), kind, client_id, account_id, scope, family_id, now, now + ttl))
+    con.close()
+
+
+def oauth_token(token, kind, now=None):
+    """-> (row, reason). Constant-time compare against the presented value's hash."""
+    now = time.time() if now is None else now
+    con = connect()
+    row = con.execute("SELECT * FROM oauth_tokens WHERE token_hash=? AND kind=?",
+                      (_hash(token), kind)).fetchone()
+    con.close()
+    if row is None:
+        return None, "unknown"
+    if row["revoked_at"] is not None:
+        return dict(row), "revoked"
+    if row["expires_at"] is not None and row["expires_at"] < now:
+        return dict(row), "expired"
+    return dict(row), None
+
+
+def rotate_oauth_refresh(old_token, now=None):
+    now = time.time() if now is None else now
+    con = connect()
+    with con:
+        con.execute("UPDATE oauth_tokens SET rotated_at=?, revoked_at=? "
+                    "WHERE token_hash=? AND kind='refresh'",
+                    (now, now, _hash(old_token)))
+    con.close()
+
+
+def revoke_oauth_family(family_id, now=None):
+    """Kill everything descended from one authorization.
+
+    Used when a spent code or a rotated refresh token is presented again. Both mean a
+    credential leaked; revoking only the replayed token would leave whoever stole it
+    holding a working one.
+    """
+    now = time.time() if now is None else now
+    con = connect()
+    with con:
+        n = con.execute("UPDATE oauth_tokens SET revoked_at=? WHERE family_id=? "
+                        "AND revoked_at IS NULL", (now, family_id)).rowcount
+    con.close()
+    return n
+
+
+def revoke_oauth_for_account(account_id, now=None):
+    """Every OAuth grant this account has issued. This is what "disconnect" means, and it
+    is why the dashboard can show connected apps at all."""
+    now = time.time() if now is None else now
+    con = connect()
+    with con:
+        n = con.execute("UPDATE oauth_tokens SET revoked_at=? WHERE account_id=? "
+                        "AND revoked_at IS NULL", (now, account_id)).rowcount
+    con.close()
+    return n
+
+
+def oauth_connections(account_id):
+    """Live grants for this account, one row per client, newest first."""
+    con = connect()
+    rows = con.execute(
+        "SELECT t.client_id, c.client_name, c.client_uri, max(t.created_at) AS last_at, "
+        "       count(*) AS n_tokens "
+        "FROM oauth_tokens t LEFT JOIN oauth_clients c USING(client_id) "
+        "WHERE t.account_id=? AND t.revoked_at IS NULL AND t.kind='refresh' "
+        "GROUP BY t.client_id ORDER BY last_at DESC", (account_id,)).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def authenticate_oauth(presented, now=None):
+    """-> a row shaped like `authenticate()` returns, so the request path treats an OAuth
+    session and an API key identically from here on.
+
+    The shape match is deliberate: every quota, tier and audit decision downstream reads
+    `account_id`, `key_id` and `tier`, and giving OAuth a different shape would mean
+    duplicating all of that with a second set of bugs.
+    """
+    if not presented or not presented.startswith(OAUTH_ACCESS_PREFIX):
+        return None
+    row, reason = oauth_token(presented, "access", now=now)
+    if reason is not None:
+        return None
+    con = connect()
+    acct = con.execute("SELECT tier FROM accounts WHERE account_id=?",
+                       (row["account_id"],)).fetchone()
+    con.close()
+    if acct is None:
+        return None
+    return {"key_id": "oauth:" + row["client_id"], "account_id": row["account_id"],
+            "tier": acct["tier"], "scope": row["scope"], "via": "oauth"}
+
+
+def purge_oauth(now=None, code_days=1, token_grace_days=30):
+    """Spent codes and dead tokens are not history worth keeping."""
+    now = time.time() if now is None else now
+    con = connect()
+    with con:
+        n_codes = con.execute("DELETE FROM oauth_codes WHERE created_at < ?",
+                              (now - code_days * 86400,)).rowcount
+        n_tokens = con.execute(
+            "DELETE FROM oauth_tokens WHERE (revoked_at IS NOT NULL AND revoked_at < ?) "
+            "OR (expires_at IS NOT NULL AND expires_at < ?)",
+            (now - token_grace_days * 86400, now - token_grace_days * 86400)).rowcount
+    con.close()
+    return {"oauth_codes_deleted": n_codes, "oauth_tokens_deleted": n_tokens}
+
+
+def oauth_tokens_for(account_id, client_id):
+    con = connect()
+    rows = con.execute(
+        "SELECT DISTINCT family_id FROM oauth_tokens WHERE account_id=? AND client_id=? "
+        "AND revoked_at IS NULL", (account_id, client_id)).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------- waitlist
+
+def join_waitlist(email, account_id=None, ip_hash=None, source="site", note=None, now=None):
+    """-> (created: bool). Idempotent: a second signup from the same address is a no-op
+    that reports "already on it", not an error -- a person re-submitting a form they
+    already sent is confirming interest, not misbehaving."""
+    email = (email or "").strip().lower()
+    con = connect()
+    created = False
+    with con:
+        row = con.execute("SELECT account_id FROM waitlist WHERE email=?",
+                          (email,)).fetchone()
+        if row is not None:
+            # Attach the account if one arrived later than the address did.
+            if account_id and not row["account_id"]:
+                con.execute("UPDATE waitlist SET account_id=? WHERE email=?",
+                            (account_id, email))
+        else:
+            con.execute("INSERT INTO waitlist (email, account_id, created_at, ip_hash, "
+                        "source, note) VALUES (?,?,?,?,?,?)",
+                        (email, account_id, now if now is not None else time.time(),
+                         ip_hash, source, note))
+            created = True
+    con.close()
+    return created
+
+
+def on_waitlist(email=None, account_id=None):
+    con = connect()
+    if email:
+        row = con.execute("SELECT 1 FROM waitlist WHERE email=?",
+                          ((email or "").strip().lower(),)).fetchone()
+    elif account_id:
+        row = con.execute("SELECT 1 FROM waitlist WHERE account_id=?",
+                          (account_id,)).fetchone()
+    else:
+        row = None
+    con.close()
+    return row is not None
+
+
+def waitlist_since(ip_hash, since):
+    con = connect()
+    n = con.execute("SELECT count(*) FROM waitlist WHERE ip_hash=? AND created_at>=?",
+                    (ip_hash, since)).fetchone()[0]
+    con.close()
+    return n
+
+
+def waitlist_rows(limit=500):
+    con = connect()
+    rows = con.execute(
+        "SELECT w.email, w.account_id, w.created_at, w.source, a.display_name "
+        "FROM waitlist w LEFT JOIN accounts a USING(account_id) "
+        "ORDER BY w.created_at DESC LIMIT ?", (limit,)).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def waitlist_count():
+    con = connect()
+    n = con.execute("SELECT count(*) FROM waitlist").fetchone()[0]
+    con.close()
+    return n

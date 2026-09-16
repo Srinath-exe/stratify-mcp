@@ -162,14 +162,20 @@ def _trade_row(i, t, with_prices):
     row["legs"] = legs
     row["entry_net_points"] = round(t.entry_credit_pts, 2)
     row["exit_net_points"] = round(t.exit_value_pts, 2)
-    if t.exit_prices is None:
-        row["exit_price_note"] = (
-            "closed on a stop or target: the engine resolves the COMBINED position value "
-            "at the firing minute in SQL, so there is no per-leg price to report")
-    elif t.exit_reason == "EXPIRY":
+    # THE EXIT REASON IS THE AUTHORITATIVE FACT, so it is read first. Checking
+    # `exit_prices is None` ahead of it put "closed on a stop or target: there is no
+    # per-leg price to report" on rows whose reason was EXPIRY and whose legs carried an
+    # exit price of 0.00 -- a note contradicting the two fields either side of it. An
+    # expiry is a settlement however the engine sourced the number; "no per-leg price" is
+    # only claimable when the legs genuinely have none.
+    if t.exit_reason == "EXPIRY":
         row["exit_price_note"] = (
             "settled, not traded: each leg is intrinsic value against NSE's final "
             "settlement price, the mean of the index over the last 30 minutes")
+    elif not any(l.get("exit_price") is not None for l in legs):
+        row["exit_price_note"] = (
+            "closed on a stop or target: the engine resolves the COMBINED position value "
+            "at the firing minute in SQL, so there is no per-leg price to report")
     return row, released
 
 
@@ -192,7 +198,8 @@ def _detail_note(trades, shown, with_prices):
 
 # ------------------------------------------------------------------ curve
 
-EQUITY_COLUMNS = ["date", "pnl_rupees", "equity_rupees", "drawdown_rupees"]
+EQUITY_COLUMNS = ["date", "pnl_rupees", "equity_rupees", "drawdown_rupees",
+                  "margin_rupees", "days_held"]
 
 
 def _equity_curve(trades):
@@ -204,10 +211,23 @@ def _equity_curve(trades):
     strategy and material on a swing one.
 
     COLUMNAR, not a list of objects. A year of daily cadence is ~246 points, and repeating
-    four key names on every one of them cost 26 KB of a 60 KB response -- then doubled,
+    five key names on every one of them would cost a third of the response -- then doubled,
     because an MCP tool result carries the payload twice for client compatibility. The same
-    series as {columns, rows} is a third of the size and reads the same to a model, which
-    is worth more here than the marginal convenience of self-describing rows.
+    series as {columns, rows} reads the same to a model, which is worth more here than the
+    marginal convenience of self-describing rows.
+
+    WHY THE ENTRY DATE IS DERIVABLE. `days_held` carries it, as a small integer rather
+    than a second date string: a consumer that wants the entry subtracts it, and one that
+    wants the holding period -- which is most of them -- has it directly. Without it
+    nothing downstream can tell "the strategy opened a position that day and it is still
+    running" from "the strategy did nothing that day", and those are opposite facts.
+
+    WHY MARGIN IS ON THE CURVE. Per-trade rows are capped and trimmed -- a standard
+    response carries 25 of them -- but the curve carries every trade. Without a margin
+    figure alongside each point, nothing downstream can size the WHOLE series: a capital
+    view could only be computed over the released sample and would silently describe a
+    different strategy. It is the one-lot blocked margin, a number this engine computes
+    from its own calibration; it is not a price and it discloses nothing about the chain.
 
     Rupees are rounded to whole units. Paise on a cumulative P&L are noise carried at the
     cost of three characters per number per point.
@@ -218,10 +238,15 @@ def _equity_curve(trades):
         equity += t.pnl_rupees
         peak = max(peak, equity)
         rows.append([t.exit_ts.strftime("%Y-%m-%d"), round(t.pnl_rupees),
-                     round(equity), round(equity - peak)])
+                     round(equity), round(equity - peak),
+                     round(t.margin_pts * t.lot_size),
+                     (t.exit_ts.date() - t.entry_ts.date()).days])
     return {"columns": list(EQUITY_COLUMNS), "rows": rows,
             "note": ("one row per trade, in exit order; equity_rupees is cumulative net "
-                     "P&L and drawdown_rupees is the gap to the running peak")}
+                     "P&L, drawdown_rupees is the gap to the running peak, "
+                     "margin_rupees is what ONE lot of that trade blocked, and days_held "
+                     "is calendar days from entry to exit (0 = opened and closed the "
+                     "same session), so the entry date is date minus days_held")}
 
 
 # ------------------------------------------------------------------ breakdowns

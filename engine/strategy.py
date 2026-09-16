@@ -100,6 +100,72 @@ TIME_FIELDS = {"time"}
 MARKET_FIELDS = {"vix", "vix_prev_close", "vix_change_pct", "prev_day_move_pct",
                  "gap_pct", "realised_vol_20d", "day_of_week"}
 
+# ---------------------------------------------------------------- indicators
+#
+# Technical indicators on the INDEX, as entry conditions. "Only sell when RSI is under 30",
+# "only when the close is above the 50-day average", "only while the 9 is over the 21".
+# These are parametric, so they are a family matched by pattern rather than entries in
+# FIELDS: `rsi_14`, `close_vs_sma_20_pct`, `close_vs_ema_50_pct`, `ema_9_vs_21_pct`.
+#
+# EVERY ONE IS COMPUTED ON YESTERDAY'S CLOSE AND EARLIER. Not today's -- today's close is
+# the future at 09:15, and reading it is the exact leak that made 29 of 51 live strategies
+# fantasy the last time. So rsi_14 on a Tuesday is the RSI of closes up to and including
+# Monday, which is what a trader looking at a chart before the open actually sees.
+#
+# The window is capped at 250 sessions (about a year): a 500-day average needs history
+# the free tier does not serve, and would be undefined for every day in the window.
+import re as _re
+
+INDICATOR_MIN, INDICATOR_MAX = 2, 250
+_IND_PATTERNS = (
+    (_re.compile(r"^rsi_(\d+)$"), "rsi"),
+    (_re.compile(r"^close_vs_sma_(\d+)_pct$"), "close_vs_sma"),
+    (_re.compile(r"^close_vs_ema_(\d+)_pct$"), "close_vs_ema"),
+    (_re.compile(r"^ema_(\d+)_vs_(\d+)_pct$"), "ema_cross"),
+    (_re.compile(r"^sma_(\d+)_vs_(\d+)_pct$"), "sma_cross"),
+)
+
+INDICATOR_DOC = {
+    "rsi_N":              "Wilder RSI of the index over N sessions ending YESTERDAY, "
+                          "0-100. rsi_14 is the usual one",
+    "close_vs_sma_N_pct": "yesterday's close against the N-session simple moving "
+                          "average, in per cent (positive = above the average)",
+    "close_vs_ema_N_pct": "the same against the N-session exponential average",
+    "ema_F_vs_S_pct":     "the F-session EMA against the S-session EMA, in per cent "
+                          "(positive = the fast average is above the slow one). "
+                          "ema_9_vs_21_pct > 0 is 'the 9 is over the 21'",
+    "sma_F_vs_S_pct":     "the same with simple averages",
+}
+
+
+def indicator_field(name):
+    """-> {"kind", "n", "m"} for an indicator field name, else None.
+
+    Raises StrategyError for a name that LOOKS like an indicator but is out of range,
+    because "unknown field rsi_500" would send the author looking for a typo."""
+    for pat, kind in _IND_PATTERNS:
+        m = pat.match(name)
+        if not m:
+            continue
+        n = int(m.group(1))
+        mm = int(m.group(2)) if m.lastindex and m.lastindex >= 2 else None
+        for v in (n, mm):
+            if v is not None and not (INDICATOR_MIN <= v <= INDICATOR_MAX):
+                raise StrategyError(
+                    f"{name}: the window must be between {INDICATOR_MIN} and "
+                    f"{INDICATOR_MAX} sessions; {v} is outside that")
+        if mm is not None and n >= mm:
+            raise StrategyError(
+                f"{name}: the fast window ({n}) must be shorter than the slow one ({mm})")
+        return {"kind": kind, "n": n, "m": mm, "name": name}
+    return None
+
+
+def is_market_field(name):
+    """A field that means something BEFORE a trade exists -- the only kind an entry gate
+    may use."""
+    return name in MARKET_FIELDS or indicator_field(name) is not None
+
 ACTIONS = ("close", "close_legs", "open", "roll", "close_and_open")
 
 # Strike selectors. Every one resolves to a listed strike at the moment it is applied.
@@ -295,9 +361,10 @@ def parse_condition(raw, where, n_legs):
                        for i, v in enumerate(val)]}
     if key == "not":
         return {"op": "not", "of": [parse_condition(val, f"{where}.not", n_legs)]}
-    if key not in FIELDS:
+    if key not in FIELDS and indicator_field(key) is None:
         raise StrategyError(
-            f"{where}: unknown field {key!r}. Available: {', '.join(sorted(FIELDS))}")
+            f"{where}: unknown field {key!r}. Available: {', '.join(sorted(FIELDS))}, "
+            f"and index indicators: {', '.join(INDICATOR_DOC)}")
     if not isinstance(val, dict):
         raise StrategyError(
             f'{where}.{key} must be a comparison object like {{"lte": -80}}')
@@ -493,6 +560,31 @@ class Strategy:
 
         return walk(self.entry_when) or walk(self.exit_when) \
             or any(walk(r["when"]) for r in self.rules)
+
+    @property
+    def indicators(self):
+        """The indicator fields this strategy actually references, as parsed specs.
+
+        Computed only for these, so a strategy that never mentions an average pays
+        nothing for the family existing."""
+        found = {}
+
+        def walk(c):
+            if c is None:
+                return
+            if c["op"] == "cmp":
+                spec = indicator_field(c["field"])
+                if spec:
+                    found[c["field"]] = spec
+                return
+            for x in c["of"]:
+                walk(x)
+
+        walk(self.entry_when)
+        walk(self.exit_when)
+        for r in self.rules:
+            walk(r["when"])
+        return found
 
     @property
     def is_credit(self):

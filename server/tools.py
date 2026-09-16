@@ -19,7 +19,8 @@ from engine.config import charges, contracts, liquidity, margin, slippage
 from engine import db as engine_db
 
 from engine import simulate, strategy as strategy_mod  # noqa: E402
-from . import (appview, artifact, book, feedback as feedback_mod, fullreport,
+from . import (appview, artifact, book, feedback as feedback_mod,
+               reportui,
                knowledge, sizing, store)
 
 # A full year of daily cadence is ~246 trades; returning every one of them with legs is
@@ -53,6 +54,11 @@ SPEC_SCHEMA = {
                 "sl_pct": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
                 "tp_pct": {"type": "number", "exclusiveMinimum": 0},
                 "entry_dte": {"type": "integer", "minimum": 0, "maximum": 45},
+                "entry_days_before": {
+                    "type": "integer", "minimum": 0, "maximum": 30,
+                    "description": ("Entry day as TRADING SESSIONS before expiry (0 = "
+                                    "expiry day, 2 = 'T-2'), instead of calendar "
+                                    "entry_dte. Set one or the other.")},
                 "direction": {"type": "string", "enum": ["CE", "PE"]},
             },
         },
@@ -76,6 +82,11 @@ SPEC_SCHEMA = {
             "description": ("cadence 'daily' only: skip sessions where the nearest expiry "
                             "is further out than this. max_dte 0 is expiry-day only.")},
         "gate": {"type": "string", "description": "Entry filter; 'always' to disable."},
+        "overlay": {
+            "type": "string", "pattern": "^vol[0-9]{1,3}$",
+            "description": ("Volatility filter: 'vol20' skips a cycle when the index's "
+                            "20-day realised volatility is above 20% at entry. Omit for "
+                            "none.")},
         "bias": {"type": "string",
                  "description": ("Chooses the side each cycle for directional structures. "
                                  "'neutral' to use a fixed direction instead.")},
@@ -155,8 +166,17 @@ STRATEGY_SCHEMA = {
                                     + ". e.g. {\"vix\": {\"gte\": 15}}, "
                                     "{\"prev_day_move_pct\": {\"lte\": -1}}, "
                                     "{\"day_of_week\": {\"eq\": 1}} for Mondays. "
-                                    "All are knowable before the session — none can see "
-                                    "the day's own close."}}},
+                                    "INDEX INDICATORS too, computed on closes up to "
+                                    "YESTERDAY: rsi_N (0-100), close_vs_sma_N_pct and "
+                                    "close_vs_ema_N_pct (per cent above/below the "
+                                    "N-day average), ema_F_vs_S_pct and sma_F_vs_S_pct "
+                                    "(fast against slow, positive = fast is above). "
+                                    "N from 2 to 250. e.g. {\"rsi_14\": {\"lt\": 30}} "
+                                    "for oversold, {\"close_vs_ema_50_pct\": "
+                                    "{\"gt\": 0}} for 'above the 50-day', "
+                                    "{\"ema_9_vs_21_pct\": {\"gt\": 0}} for a 9/21 "
+                                    "crossover. All are knowable before the session — "
+                                    "none can see the day's own close."}}},
         "rules": {"type": "array", "maxItems": 24, "description":
             "Checked every minute, in order; the first match fires. Fields: "
             + ", ".join(sorted(strategy_mod.FIELDS)) +
@@ -200,6 +220,9 @@ EITHER_SPEC = {"description":
 TOOLS = [
     {
         "name": "run_backtest",
+        # Reads market data and returns a result. It stores that result under the caller's own account so the id and report link keep resolving, which is bookkeeping for the caller, not a change to anything the caller owns elsewhere.
+        "annotations": {"title": 'Run a backtest', "readOnlyHint": True,
+                        "destructiveHint": False},
         "description": (
             "Backtest an Indian index option strategy on real 1-minute NIFTY options data. "
             "Returns P&L after real charges and slippage, return-on-margin, and an honesty "
@@ -238,6 +261,9 @@ TOOLS = [
     },
     {
         "name": "describe_coverage",
+        # Pure metadata.
+        "annotations": {"title": 'What the data covers', "readOnlyHint": True,
+                        "destructiveHint": False},
         "description": (
             "What data is available: symbols, date range, resolution, structures, gates, "
             "biases, the cost model, and every known gap. Call this before building a spec."),
@@ -245,6 +271,9 @@ TOOLS = [
     },
     {
         "name": "explain_methodology",
+        # Pure documentation.
+        "annotations": {"title": 'How a result is produced', "readOnlyHint": True,
+                        "destructiveHint": False},
         "description": (
             "How a result is produced and how to judge it: entry pricing, settlement, "
             "margin, slippage, the honesty rubric, and what each check can and cannot "
@@ -258,6 +287,9 @@ TOOLS = [
     },
     {
         "name": "get_backtest",
+        # Reads back the caller's own result.
+        "annotations": {"title": 'Retrieve a stored backtest', "readOnlyHint": True,
+                        "destructiveHint": False},
         "description": ("Retrieve a previous backtest result by its id — honesty panel, "
                         "equity curve and per-trade detail, exactly as first computed."),
         "inputSchema": {
@@ -275,6 +307,9 @@ TOOLS = [
     },
     {
         "name": "list_strategies",
+        # Reads this account's shortlist.
+        "annotations": {"title": 'List kept strategies', "readOnlyHint": True,
+                        "destructiveHint": False},
         "description": (
             "Strategies from THIS account's history that held up under out-of-sample and "
             "walk-forward checks, not merely ones that made money. Ranked by worst "
@@ -294,6 +329,9 @@ TOOLS = [
     },
     {
         "name": "search",
+        # Read-only lookup.
+        "annotations": {"title": 'Search what the service covers', "readOnlyHint": True,
+                        "destructiveHint": False},
         "description": ("Search what this service covers — symbols, dates, structures, "
                         "signals, methodology. Returns ids usable with fetch."),
         "inputSchema": {
@@ -303,6 +341,9 @@ TOOLS = [
     },
     {
         "name": "fetch",
+        # Read-only lookup.
+        "annotations": {"title": 'Fetch a document or result', "readOnlyHint": True,
+                        "destructiveHint": False},
         "description": "Fetch a document or backtest result by id, as returned by search.",
         "inputSchema": {
             "type": "object", "required": ["id"], "additionalProperties": False,
@@ -311,6 +352,9 @@ TOOLS = [
     },
     {
         "name": "submit_feedback",
+        # WRITES: creates a feedback record. Not destructive — it adds a row and removes or overwrites nothing, so destructiveHint is false while readOnlyHint is false too.
+        "annotations": {"title": 'File a report', "readOnlyHint": False,
+                        "destructiveHint": False},
         "description": (
             "Report a bug, request a feature, flag a data gap, or say what worked. Use "
             "this whenever the user expresses a problem with this service or wishes it "
@@ -337,6 +381,9 @@ TOOLS = [
     },
     {
         "name": "build_report",
+        # WRITES: renders and stores a new report page at a new URL. Additive, so not destructive; it never replaces or deletes an existing report.
+        "annotations": {"title": 'Build a shareable report', "readOnlyHint": False,
+                        "destructiveHint": False},
         "description": (
             "Turn a stored backtest into a finished, self-contained Stratify report — one "
             "HTML document with the honesty panel, equity and drawdown curves, "
@@ -368,7 +415,9 @@ TOOLS = [
                         "than glance at it. It is rate limited.")},
                 "capital": {"type": "integer", "minimum": 100000, "maximum": 100000000,
                             "description": "format 'full' only. Starting capital in "
-                                           "rupees. Default 1,000,000."},
+                                           "rupees. It sets the report's OPENING view — "
+                                           "the reader can change it in the page without "
+                                           "a new report. Default 1,000,000."},
                 "deploy_pct": {"type": "number", "minimum": 1, "maximum": 100,
                                "description": "format 'full' only. Percent of capital "
                                               "used as margin on any one trade. "
@@ -387,6 +436,9 @@ TOOLS = [
     },
     {
         "name": "my_feedback",
+        # Reads this account's own reports.
+        "annotations": {"title": 'My filed reports', "readOnlyHint": True,
+                        "destructiveHint": False},
         "description": ("Reports this account has filed, and where each one stands. Use "
                         "it to answer 'did that bug I reported ever get fixed?'."),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -1037,12 +1089,32 @@ def _full_report(arguments, context, row, payload, backtest_id):
     if not chart_rows:
         raise ToolError("that backtest produced no trades, so there is nothing to plot")
 
-    period = (payload.get("summary") or {}).get("period") or {}
-    candles = index_series.daily(period.get("from") or str(spec.date_from),
-                                 period.get("to") or str(spec.date_to))
     url = f"{context['base_url']}/r/{row['report_token']}"
-    html_doc = fullreport.render(payload, chart_rows, candles, backtest_id,
-                                 capital=capital, deploy=deploy, report_url=url)
+
+    # ONE REPORT DESIGN, EVERYWHERE. This used to render through fullreport.py, a second
+    # renderer with its own layout, its own charts and its own capital model -- which is
+    # how the same backtest came to read +Rs 5.1k on one page and -Rs 4.99 L on the other.
+    # Both were right about different questions, and neither said which it was answering.
+    # `format='full'` now produces the SAME document as /r/, so there is one design to
+    # maintain and one set of numbers to be wrong.
+    #
+    # WHAT 'full' STILL BUYS is the thing it always bought: every trade. The stored payload
+    # was trimmed before it was saved (see _trim -- what is persisted is what was released),
+    # so the hosted page draws the first STANDARD_TRADES. Re-running the spec here yields
+    # all of them, and that extra release is why this path is separately rate-limited.
+    #
+    # The summary, honesty panel and interpretation are taken from the STORED record rather
+    # than recomputed: honesty.panel() writes to the multiple-comparisons log, so rebuilding
+    # it would count this render as another variant the user had tried.
+    full_payload = dict(payload)
+    full_payload.update(detail.build(result, max_trades=detail.MAX_TRADES_RETURNED))
+    full_payload["data_release"] = _release_note(full_payload)
+    # The capital controls are live in the page, so these arguments seed the view rather
+    # than fixing it -- the reader can still move them without asking for a new report.
+    html_doc = reportui.render(full_payload, backtest_id, report_url=url,
+                               report_token=row["report_token"],
+                               capital=capital, deploy_pct=deploy * 100.0,
+                               risk_pct=(risk * 100.0) if risk else None)
     token = store.save_full_report(backtest_id, context["account_id"], html_doc)
     full_url = f"{context['base_url']}/report/{token}"
     try:
@@ -1057,10 +1129,14 @@ def _full_report(arguments, context, row, payload, backtest_id):
         "message": ("The full strategy report is ready. GIVE THE USER THIS LINK — it is "
                     "the whole strategy on one page and it is not something to summarise."),
         "contains": ["the strategy's rules in plain English",
-                     f"what it did to {capital:,} rupees of capital",
-                     f"all {len(chart_rows)} trades plotted on a zoomable NIFTY chart",
-                     "the evidence panel", "the capital and drawdown curve",
-                     "the trade table with leg prices"],
+                     f"what it did to {capital:,} rupees of capital, with the capital, "
+                     f"deployment and position-sizing controls live in the page",
+                     f"a shaded calendar of all {len(chart_rows)} trades, day by day",
+                     "the evidence panel", "the equity and drawdown curves",
+                     # The zoomable index chart moved rather than disappeared: it is the
+                     # replay, linked from the report, which steps through every entry and
+                     # exit on the index instead of plotting them all statically.
+                     "a link to the replay, which steps through every trade on the index"],
         "headline": {
             "starting_capital": sized["starting_capital"],
             "ending_capital": sized["ending_capital"],
@@ -1128,7 +1204,14 @@ def build_report(arguments, context):
     # What is drawn is bounded by what was released, so a summary-detail backtest yields a
     # report with no per-trade section -- the document cannot become a richer channel than
     # the call that produced it.
-    document = artifact.render(payload, backtest_id, report_url=url)
+    # The SAME renderer the hosted page uses. Two renderers of one backtest is two
+    # sets of numbers waiting to disagree -- which is exactly what happened when
+    # fullreport.py became a second one. A test asserts these bytes match /r/.
+    # report_token too, so the published copy carries the same replay link the hosted
+    # page does. Without it the two documents differ by a whole call-to-action, and
+    # the test that keeps them identical catches exactly that.
+    document = reportui.render(payload, backtest_id, report_url=url,
+                               report_token=row["report_token"])
     detail = payload.get("trade_detail") or {}
     return {
         "backtest_id": backtest_id,
@@ -1172,3 +1255,19 @@ HANDLERS = {
     "search": search,
     "fetch": fetch,
 }
+
+# WHICH CALLS SPEND THE BACKTEST ALLOWANCE. Only the two that run the engine.
+#
+# Every tool used to count against one 100-per-hour limit whose refusal read "100 of 100
+# BACKTESTS used in the last hour". Two things were wrong with that. The message was
+# untrue -- a model that read the coverage and the methodology before each run, which is
+# exactly what SERVER_INSTRUCTIONS tells it to do, spent most of that budget on metadata
+# and was then told it had run a hundred backtests. And the effect was worse than the
+# message: doing the careful thing cut the real backtest budget to about a third.
+#
+# The other tools are not free -- they are metered on their own, far higher ceiling, and
+# they still cost CPU-seconds like everything else. They just no longer consume the
+# allowance for the thing people came here to do. Metering still happens at the dispatch
+# point, so a new tool cannot forget to be counted; it only has to declare itself here to
+# be counted as engine work.
+BILLABLE_TOOLS = frozenset({"run_backtest", "build_report"})

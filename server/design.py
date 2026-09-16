@@ -107,3 +107,27 @@ MARK_HTML = """<div class="mark">
 </svg>
 <span class="txt">Made with <b>Stratify MCP</b> &middot; real 1-minute NIFTY options data</span>
 </div>"""
+
+
+import html as _html
+
+
+def _esc(v):
+    return _html.escape("" if v is None else str(v))
+
+
+def info(title, body):
+    """A hover/focus overlay carrying an explanation the page no longer prints.
+
+    WHY THE PROSE MOVED. Every section used to carry a lede explaining what it showed, and
+    read as a manual wrapped around a result. Most of it was obvious to anyone who had got
+    that far -- a calendar shaded green and red does not need a paragraph saying so -- and
+    the few sentences that were NOT obvious were buried among the ones that were. Moving
+    all of it behind an icon lets the non-obvious parts be longer and more precise, because
+    nobody pays for them until they ask.
+
+    The overlay is `position: fixed` on a single element appended to <body>, not a child of
+    the icon: the controls sit inside `overflow: hidden` and a nested popup was clipped.
+    """
+    return (f'<button class="info" type="button" aria-label="About {_esc(title)}" '
+            f'data-t="{_esc(title)}" data-b="{_esc(body)}">i</button>')

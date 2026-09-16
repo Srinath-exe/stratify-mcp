@@ -68,10 +68,10 @@ SQL window frame ends the day *before* entry.
 
 ```
 engine/      Spec in, trades and evidence out.
-server/      MCP service, dashboard, Google sign-in, quotas, reports.
+server/      MCP service, OAuth 2.1 server, dashboard, Google sign-in, quotas, reports.
 data/        ClickHouse schema and per-tier settings profiles.
-packages/    Published clients, released FROM this repo — npm and PyPI both
-             point back here. stratify-npm is TS, stratify-py is Python.
+packages/    Published clients (npm, PyPI), the Claude Desktop bundle, the Gemini CLI
+             extension and the MCP Registry entry. See packages/stratify-npm/PUBLISHING.md.
 tests/       Adversarial suites: 100-strategy uniqueness sweep, exotic specs, market gates.
 docs/        Internal design record, frozen at the dates in each header.
 vendor/      Runtime inputs the engine loads but does not ship. Read vendor/README.md.
@@ -91,7 +91,7 @@ This repository contains no data and cannot fetch any.
 
 ```bash
 pip install -r requirements.txt
-python3 -m pytest engine/tests server/tests -q     # 527 tests
+python3 -m pytest engine/tests server/tests -q     # 667 tests; 212 skip without the database
 cp .env.example .env                                # then fill it in
 ./server/run.sh
 ```

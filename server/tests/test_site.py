@@ -129,7 +129,18 @@ def test_the_next_parameter_cannot_leave_this_site():
         assert oauth._safe_next(h) == "/app", f"escaped the site via {h!r}"
     for safe in ("/app/logs", "/app", "/app/keys?new=1", "/r/abc123"):
         assert oauth._safe_next(safe) == safe
-    assert len(oauth._safe_next("/a" * 500)) <= 200
+    # The cap is a sanity bound, not the security control -- the origin checks above are
+    # what stop an escape, and they are asserted on every hostile input in this test. It
+    # was 200 and silently truncated an /oauth/authorize round trip, which carries a
+    # client_id, a redirect_uri, a PKCE challenge, a scope and a state.
+    assert len(oauth._safe_next("/a" * 5000)) <= 1500
+    long_authorize = ("/oauth/authorize?response_type=code&client_id=cli_" + "a" * 32
+                      + "&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth_callback"
+                      + "&code_challenge=" + "b" * 43
+                      + "&code_challenge_method=S256&scope=mcp+offline_access&state="
+                      + "c" * 32)
+    assert oauth._safe_next(long_authorize) == long_authorize, (
+        "an OAuth authorize round trip must survive sign-in intact")
 
 
 def test_a_verified_google_identity_is_matched_on_subject_not_email(client):
@@ -379,3 +390,26 @@ def test_one_tap_cannot_redirect_off_site(client, google_on, monkeypatch):
                     data={"credential": "a.b.c", oauth.CSRF_FIELD: "tok",
                           "next": "https://evil.test/steal"}, follow_redirects=False)
     assert r.headers["location"] == "/app"
+
+
+
+def test_every_report_row_links_to_its_report(client):
+    """The dashboard's whole job on this page is getting you INTO a report.
+
+    recent_results_for_account did not select report_token, so site._report_row built no
+    URL and render._report_table drew no Open button -- for every row, since the page
+    shipped. The list looked complete and led nowhere: the only way to reach a report was
+    to still have the URL from the original tool call.
+    """
+    acc = _account("reports@example.com", "sub-reports")
+    key_id, _ = store.issue_key(acc["account_id"])
+    store.save_result(key_id, '{"structure":"iron_condor","cadence":"weekly"}', "h1", "{}")
+
+    view = site.reports_view(acc, "https://stratify.test")
+    assert view["rows"], "the result was saved but the page shows nothing"
+    for row in view["rows"]:
+        assert row["url"], f"{row['backtest_id']} has no link -- the row is a dead end"
+        assert "/r/" in row["url"]
+
+    # And the rendered table must actually carry the anchor, not just the view model.
+    assert 'href="https://stratify.test/r/' in render.reports(view)

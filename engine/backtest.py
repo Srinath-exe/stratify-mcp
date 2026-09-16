@@ -94,8 +94,32 @@ def _cycles(spec):
     if spec.cadence == "daily":
         return _daily_cycles_cached(spec.max_dte, spec.date_from, spec.date_to,
                                     db.DATABASE, db.current_user.get())
+    if spec.entry_days_before is not None:
+        return _session_cycles_cached(spec.entry_days_before, spec.date_from, spec.date_to,
+                                      db.DATABASE, db.current_user.get())
     return _cycles_cached(spec.entry_dte, spec.date_from, spec.date_to,
                           db.DATABASE, db.current_user.get())
+
+
+@functools.lru_cache(maxsize=256)
+def _session_cycles_cached(n_before, date_from, date_to, database, ch_user):
+    """One cycle per expiry: the n-th trading SESSION before it (0 = expiry day itself).
+    Counted over the sessions the contract actually traded, so a holiday simply is not a
+    session -- T-2 under a Tuesday expiry is Friday, and under a Thursday expiry Tuesday,
+    which is what the research book means by "T-2" and what calendar dte cannot say."""
+    rows = db.rows(
+        f"""
+        SELECT expiry_date, trade_date, dte FROM (
+          SELECT expiry_date, trade_date, dte,
+                 row_number() OVER (PARTITION BY expiry_date ORDER BY trade_date DESC) - 1
+                   AS sessions_before
+          FROM ( SELECT DISTINCT expiry_date, trade_date, dte FROM {db.DATABASE}.contract_day
+                 WHERE trade_date >= %(d0)s AND trade_date <= %(d1)s
+                   AND expiry_date <= %(d1)s AND trade_date <= expiry_date AND dte <= 45 ) )
+        WHERE sessions_before = %(n)s ORDER BY expiry_date
+        """,
+        {"n": int(n_before), "d0": date_from, "d1": date_to})
+    return list(rows)
 
 
 @functools.lru_cache(maxsize=256)
@@ -262,6 +286,25 @@ def _nearest_listed(strikes, target, prefer_higher):
 # atm therefore reports the SMALLEST calibrated margin for a strangle that is nowhere near
 # where the engine thinks it is -- a wrong margin, in the flattering direction.
 MAX_ATM_DRIFT_STEPS = 2
+
+
+def _side_for(structure, bias):
+    """Which option type a directional structure takes for a bias reading.
+
+    Matches production (structures.credit_spread and paper_trading/engine.py line for
+    line): a CREDIT spread sells the side the market is expected to move AWAY from --
+    bullish sells the PUT spread, bearish the CALL spread -- and a neutral read is treated
+    as bullish, because that is `bullish = bias != "bearish"` in both production engines.
+    Until 2026-09-15 this engine had the credit spread the other way round (bullish sold
+    calls) and skipped neutral weeks, so every bias-driven credit spread it served was on
+    the wrong side of the market. A long option buys the side it expects the move
+    towards; there a neutral read genuinely has no side, and the cycle is skipped.
+    """
+    if structure == "credit_spread":
+        return "CE" if bias == "bearish" else "PE"
+    if bias == "neutral":
+        return None
+    return "CE" if bias == "bullish" else "PE"
 
 
 def _build_legs(spec, chain, spot, expiry, direction=None, reasons=None):
@@ -517,6 +560,7 @@ def run(raw_spec, lots=1):
 
     opened, warnings, notes = [], [], []
     skipped_no_chain = skipped_gate = skipped_bias = skipped_no_holding = 0
+    skipped_overlay = 0
     skip_reasons = {}
     for c in cycles:
         key = (c["expiry_date"], c["trade_date"])
@@ -539,12 +583,16 @@ def run(raw_spec, lots=1):
         if not allowed:
             skipped_gate += 1
             continue
+        if spec.overlay and not signals.overlay_allows(spec.overlay, c["trade_date"],
+                                                       spec.entry_minute):
+            skipped_overlay += 1
+            continue
         direction = spec.params.get("direction")
         if spec.bias != "neutral":
-            if bias == "neutral":
+            direction = _side_for(spec.structure, bias)
+            if direction is None:
                 skipped_bias += 1
                 continue
-            direction = "CE" if bias == "bullish" else "PE"
         legs = _build_legs(spec, chain, spot, c["expiry_date"], direction, skip_reasons)
         if legs is None:
             skipped_no_chain += 1
@@ -595,6 +643,10 @@ def run(raw_spec, lots=1):
     if skipped_gate:
         notes.append(f"{skipped_gate} of {len(cycles)} cycles skipped by gate "
                      f"{spec.gate!r}")
+    if skipped_overlay:
+        notes.append(f"{skipped_overlay} of {len(cycles)} cycles skipped by the "
+                     f"{spec.overlay} overlay (20-day realised vol above "
+                     f"{spec.overlay_cutoff:g}% at entry)")
     if skipped_bias:
         notes.append(f"{skipped_bias} of {len(cycles)} cycles skipped: bias "
                      f"{spec.bias!r} read neutral, so there was no side to take")

@@ -6,6 +6,17 @@ answered "accepted as recommended" with two clarifications (E2, F1).
 This file is the build's source of truth. Where a spec document and this file disagree,
 **this file wins** and the spec document is stale.
 
+**Amended 2026-09-06 (§0, §7):** OAuth 2.1 was *built*, not bought — `server/mcpauth.py`,
+with PKCE, dynamic client registration and client-ID metadata documents — because every
+provider quoted needed the identity to live with them, and identity here is the Google
+sign-in the site already had. Bearer keys remain the header path. ChatGPT, the Gemini web
+app and Claude's connector directory are therefore reachable. Everything else in §0 stands:
+no approval step, no usage inspection, quotas as the only bound.
+
+**Amended 2026-09-16 (§0):** an admin-*issued* password sign-in exists (`/login`) so a
+directory reviewer can be handed working credentials. It is not a signup — nobody can set
+a password for themselves, and there is no reset flow.
+
 ---
 
 ## 0. Access model (the decision that framed the rest)

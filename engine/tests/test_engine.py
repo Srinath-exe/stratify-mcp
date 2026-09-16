@@ -104,9 +104,12 @@ def test_coverage_floor_is_measured_on_scans_not_trades():
     (measured on scans, not trades) must not reject it just because most cycles read
     neutral."""
     from engine import backtest
+    # A credit spread no longer skips neutral weeks (production treats neutral as bullish,
+    # see _side_for), so the thin-trading-days shape is produced with a gate instead: the
+    # fade_shock gate opens on a handful of days a year.
     r = backtest.run({"structure": "credit_spread", "symbol": "NIFTY",
-                      "params": {"pct_offset": 1.5, "pct_width": 1.0},
-                      "bias": "donchian", "entry_time": "09:30",
+                      "params": {"pct_offset": 1.5, "pct_width": 1.0, "direction": "PE"},
+                      "gate": "fade_shock", "entry_time": "09:30",
                       "period": {"from": "2025-07-01", "to": "2026-06-30"}})
     # Confirms this really is the thin-trading-days shape the fix targets -- if it traded
     # on plenty of days, the old trade-based floor would never have been in danger of
@@ -568,3 +571,17 @@ def test_finite_parameters_still_pass():
     spec = spec_mod.parse({"structure": "short_strangle", "entry_time": "11:00",
                            "params": {"pct_offset": 1.5, "sl_mult": 2.0, "entry_dte": 4}})
     assert spec.params["sl_mult"] == 2.0
+
+
+
+def test_credit_spread_bias_side_matches_production():
+    """bullish sells the PUT spread, bearish the CALL spread, neutral counts as bullish --
+    the production rule (structures.credit_spread: `bullish = bias != "bearish"`). The
+    engine had this inverted until 2026-09-15."""
+    from engine import backtest
+    assert backtest._side_for("credit_spread", "bullish") == "PE"
+    assert backtest._side_for("credit_spread", "bearish") == "CE"
+    assert backtest._side_for("credit_spread", "neutral") == "PE"
+    assert backtest._side_for("long_option", "bullish") == "CE"
+    assert backtest._side_for("long_option", "bearish") == "PE"
+    assert backtest._side_for("long_option", "neutral") is None

@@ -21,22 +21,35 @@ NOT PRESENT, deliberately: any route that returns market data. Decision D3 — z
 import ipaddress
 import json
 import os
+from pathlib import Path
 import time
 import traceback
 import urllib.parse
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, Header, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from engine import db as engine_db
+from engine import replay as engine_replay
+from engine import backtest, simulate, spec as spec_mod, strategy as strategy_mod
 
 from . import (admin as admin_console, appview, artifact as artifact_report, book,
+               mcpauth,
+               reportui, replay_view,
                dashboard as dash, feedback as feedback_mod, knowledge, oauth, quota,
                render, reports, site, store, tools)
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_INFO = {"name": "stratify", "version": "1.0.0"}
+
+# Readiness floor for the served window. The free tier covers 2025-07-01..2026-06-30, which
+# is 246 NSE trading days as built. The check is a FLOOR, not equality: a holiday
+# reclassification or a late session legitimately moves the count by a day or two, and a
+# readiness probe that alarms on that is a probe people learn to ignore. It catches the
+# failure that matters — a table rebuilt empty or half-filled, which reads as "healthy"
+# everywhere else and backtests every strategy to zero trades.
+MIN_TRADING_DAYS_SERVED = int(os.getenv("STRATIFY_MIN_TRADING_DAYS", "240"))
 
 # A locally-bound MCP server is reachable from any web page the user visits unless it
 # checks Origin — the browser will happily POST to 127.0.0.1 with the user's ambient
@@ -87,6 +100,17 @@ def _base_url(request):
 def _mcp_url(request):
     """The endpoint an MCP client should be pointed at."""
     return PUBLIC_MCP_URL or f"{str(request.base_url).rstrip('/')}/mcp"
+
+
+def _mcp_host(request):
+    """The ORIGIN of the MCP endpoint, without the /mcp path.
+
+    Protected resource metadata is served from the resource's own host, and the `resource`
+    value inside it has to match the URL the user typed into their client exactly. Deriving
+    the origin from the pinned MCP URL keeps those two consistent even when this handler is
+    reached through the web host."""
+    url = _mcp_url(request)
+    return url[:-len("/mcp")] if url.endswith("/mcp") else url
 
 
 def _client_ip(request):
@@ -235,7 +259,16 @@ def _authenticate(headers, url_key=None):
     # A header beats the URL when both are present: it is the better channel, and a stale
     # key baked into a saved connector URL should not override one sent deliberately.
     presented = _key_from_headers(headers) or (url_key or "").strip() or None
-    return store.authenticate(presented) if presented else None
+    if not presented:
+        return None
+    # TWO CREDENTIALS, ONE SHAPE. An API key suits a client that can set a header; an
+    # OAuth access token is the only thing the browser assistants accept. They resolve to
+    # the same account and the same tier, and both return the same row shape, so nothing
+    # downstream -- quotas, audit, tier binding -- needs to know which one arrived.
+    # The prefix decides, so a token is never hashed against every API key and vice versa.
+    if presented.startswith(store.OAUTH_ACCESS_PREFIX):
+        return store.authenticate_oauth(presented)
+    return store.authenticate(presented)
 
 
 CORS_HEADERS = ("authorization, x-api-key, x-stratify-key, api-key, "
@@ -282,9 +315,20 @@ async def mcp_endpoint_keyed(url_key: str, request: Request):
     lets a user set the URL, so this route works everywhere without building OAuth.
 
     THE TRADE, stated plainly: a key in a URL is a key in a place URLs get stored -- the
-    client's config, and any proxy log in between. nginx is configured not to log this
-    path (see sites-available/stratify), and the key is revocable from the dashboard, but
-    a header remains the better choice wherever a client allows one.
+    client's config, the server's access log, and any proxy in between. The MCP
+    authorization spec prohibits credentials in the URI query string for this reason; a
+    path segment is the same exposure wearing a different hat.
+
+    A PREVIOUS VERSION OF THIS COMMENT CLAIMED nginx was configured not to log this path.
+    It is not, and never was -- sites-available/stratify has no location block for
+    /mcp/k/ at all, so the route 404s at the edge before it reaches this handler, and if
+    it were proxied it would land in stratify-mcp.access.log with the key in it on every
+    request. Whoever enables this must add BOTH a location block AND `access_log off`
+    inside it; the flag alone is not enough to make it work, and working without the
+    second half would quietly write live credentials to disk.
+
+    The key is revocable from the dashboard, but a header remains the better choice
+    wherever a client allows one.
     """
     if not ALLOW_URL_KEY:
         return JSONResponse(_rpc_error(None, INVALID_REQUEST,
@@ -309,9 +353,49 @@ async def _serve_mcp(request: Request, url_key):
     except Exception:
         return JSONResponse(_rpc_error(None, PARSE_ERROR, "invalid JSON"), status_code=400)
 
+    # LAZY AUTHENTICATION. The refusal has to be an HTTP 401, not a JSON-RPC error inside
+    # a 200, and it has to happen here -- once _handle runs, its return value is already
+    # destined to be wrapped in a 200.
+    #
+    # A 200 carrying an auth error is read by the model as a tool RESULT: it prints
+    # "missing or invalid API key" into the conversation and moves on, and the user is
+    # given no way to sign in. Only a transport-level 401 makes a client pause, run the
+    # OAuth flow, and retry the same call. That difference is the whole reason this exists.
+    #
+    # initialize, tools/list and the knowledge surfaces stay unauthenticated deliberately:
+    # a model should be able to learn the rules before spending a credential on getting
+    # them wrong. Only tools/call is gated.
+    if _needs_auth(message) and _authenticate(request.headers, url_key) is None:
+        return _cors(_auth_challenge(request), request)
+
     if isinstance(message, list):
         return _cors(JSONResponse([_handle(m, request, url_key) for m in message]), request)
     return _cors(JSONResponse(_handle(message, request, url_key)), request)
+
+
+def _needs_auth(message):
+    """True when the request calls a tool. Batches count if any member does."""
+    for msg in (message if isinstance(message, list) else [message]):
+        if isinstance(msg, dict) and msg.get("method") == "tools/call":
+            return True
+    return False
+
+
+def _auth_challenge(request):
+    """401 + WWW-Authenticate, pointing at the metadata that names our issuer.
+
+    The chain is: this header -> protected resource metadata -> authorization server
+    metadata -> /authorize. None of it is hard-coded in the client, which is what lets the
+    same server work in Claude, ChatGPT and Gemini without three integrations.
+    """
+    resource_meta = f"{_mcp_host(request)}/.well-known/oauth-protected-resource/mcp"
+    return JSONResponse(
+        {"error": "invalid_token",
+         "error_description": ("Authentication required. Connect this server to sign in, "
+                               "or send an API key from "
+                               f"{_base_url(request)} as 'Authorization: Bearer sk_live_...'.")},
+        status_code=401,
+        headers={"WWW-Authenticate": mcpauth.challenge_header(resource_meta)})
 
 
 def _handle(message, request, url_key=None):
@@ -417,8 +501,11 @@ def _handle(message, request, url_key=None):
                                      "'X-API-Key: sk_live_...' instead — same effect.")})
 
     tier = quota.tier_for(key)
+    # Only run_backtest and build_report spend the backtest allowance; see
+    # tools.BILLABLE_TOOLS for why the rest are counted on their own ceiling.
+    billable = name in tools.BILLABLE_TOOLS
     try:
-        quota.check(key["account_id"], tier)
+        quota.check(key["account_id"], tier, billable=billable)
     except quota.QuotaExceeded as exc:
         return _rpc_error(request_id, QUOTA_EXCEEDED, exc.message,
                           {"limit": exc.limit, "retry_after_seconds": exc.retry_after_seconds})
@@ -471,7 +558,8 @@ def _handle(message, request, url_key=None):
         # forgetting to be counted.
         cpu = time.process_time() - started
         store.record_usage(key["key_id"], key["account_id"], cpu,
-                           price_points=context.get("price_points", 0))
+                           price_points=context.get("price_points", 0),
+                           billable=billable)
         audit.update(cpu_seconds=cpu, price_points=context.get("price_points", 0),
                      backtest_id=(payload or {}).get("backtest_id")
                      if isinstance(payload, dict) else None,
@@ -537,6 +625,8 @@ async def signup(request: Request):
         "quota_note": ("Limits are metered on the ACCOUNT, not on the key. Issuing more "
                        "keys does not increase your allowance."),
         "limits": {"backtests_per_hour": quota.TIERS["free"].requests_per_hour,
+                   "other_calls_per_hour":
+                       quota.TIERS["free"].metadata_requests_per_hour,
                    "cpu_seconds_per_hour": quota.TIERS["free"].cpu_seconds_per_hour,
                    "price_points_per_hour": quota.TIERS["free"].price_points_per_hour,
                    "max_concurrent": quota.TIERS["free"].max_concurrent},
@@ -660,9 +750,10 @@ async def signup_form(request: Request):
 
 # ------------------------------------------------------- sign in with Google
 #
-# The session cookie is set in exactly two places: here, and the legacy email signup above.
-# Everything else only reads it. Keeping the write points down to two is what makes "who
-# can be signed in as whom" a question with a short answer.
+# The session cookie is set in exactly three places: here, the issued-password sign-in
+# below, and the legacy email signup above. Everything else only reads it. Keeping the
+# write points down to a short list is what makes "who can be signed in as whom" a
+# question with a short answer.
 
 def _sign_in(account, response):
     """Attach a fresh session cookie for `account` to `response`."""
@@ -750,6 +841,52 @@ async def auth_google_onetap(request: Request):
     # Where One Tap was shown, not an attacker-supplied target: `_safe_next` keeps this a
     # path on this site whatever the form said.
     nxt = oauth._safe_next(form.get("next") or "/app")
+    return _sign_in(account, RedirectResponse(nxt, status_code=303))
+
+
+# ------------------------------------------------- sign in with an issued password
+#
+# Not a signup. Nobody can set a password for themselves; the admin console issues one
+# to a specific address, which is what a directory reviewer needs: credentials that work
+# on a stranger's machine without a Google account or a second factor we hold. There is
+# no reset flow on purpose -- the person who issued it re-issues it.
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    account = _account_from_cookie(request)
+    nxt = oauth._safe_next(request.query_params.get("next") or "/app")
+    if account is not None:
+        return RedirectResponse(nxt, status_code=302)
+    return HTMLResponse(render.login(site.login_view(
+        _base_url(request), nxt, google_ready=oauth.enabled())))
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def login_submit(request: Request):
+    form = await request.form()
+    email = (form.get("email") or "").strip().lower()[:254]
+    password = form.get("password") or ""
+    nxt = oauth._safe_next(form.get("next") or "/app")
+    base = _base_url(request)
+    if "@" not in email or not password:
+        return HTMLResponse(render.login(site.login_view(
+            base, nxt, google_ready=oauth.enabled(),
+            error="Enter the email address and password you were issued.")),
+            status_code=400)
+    try:
+        ip_hash = quota.check_login(_client_ip(request), email)
+    except quota.QuotaExceeded as exc:
+        return HTMLResponse(render.login(site.login_view(
+            base, nxt, google_ready=oauth.enabled(), error=exc.message)),
+            status_code=429, headers={"Retry-After": str(exc.retry_after_seconds)})
+    account = store.verify_password(email, password)
+    store.record_login(ip_hash, email, ok=account is not None)
+    if account is None:
+        # One message for every failure. "No such account" and "wrong password" are the
+        # same sentence, so the form cannot be used to list who has a password.
+        return HTMLResponse(render.login(site.login_view(
+            base, nxt, google_ready=oauth.enabled(),
+            error="That email and password did not match.")), status_code=401)
     return _sign_in(account, RedirectResponse(nxt, status_code=303))
 
 
@@ -849,6 +986,62 @@ async def docs_page(request: Request):
         _base_url(request), signed_in=_account_from_cookie(request) is not None)))
 
 
+@app.get("/explore", response_class=HTMLResponse)
+async def explore_page(request: Request):
+    return HTMLResponse(render.explore(site.explore_view(
+        _base_url(request), signed_in=_account_from_cookie(request) is not None)))
+
+
+@app.get("/pricing", response_class=HTMLResponse)
+async def pricing_page(request: Request):
+    return HTMLResponse(render.pricing(site.pricing_view(
+        _base_url(request), _account_from_cookie(request))))
+
+
+_FONTS_CSS = None
+
+
+@app.get("/static/fonts.css")
+async def fonts_css():
+    """The report inlines these 280 KB into every document because a report must fetch
+    nothing. A website is the opposite case: many pages, one browser, so the fonts are
+    fetched once and cached for a year. Still first-party -- no font host ever sees a
+    visitor's address."""
+    global _FONTS_CSS
+    if _FONTS_CSS is None:
+        from pathlib import Path
+        f = Path(__file__).resolve().parent / "_fonts.css"
+        _FONTS_CSS = f.read_text() if f.exists() else ""
+    from fastapi.responses import Response
+    return Response(_FONTS_CSS, media_type="text/css",
+                    headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+_ASSET_TYPES = {".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon"}
+_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+
+
+def _asset(name):
+    """The mark, in the sizes the directories ask for. Immutable cache: a changed mark
+    ships under a new filename."""
+    from fastapi.responses import Response
+    f = _ASSETS_DIR / name
+    if "/" in name or not f.is_file() or f.suffix not in _ASSET_TYPES:
+        raise HTTPException(404)
+    return Response(f.read_bytes(), media_type=_ASSET_TYPES[f.suffix],
+                    headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+@app.get("/static/{name}")
+async def static_asset(name: str):
+    return _asset(name)
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    return _asset("favicon.ico")
+
+
 @app.get("/privacy", response_class=HTMLResponse)
 async def privacy_page(request: Request):
     """Public and linkable without a session. Google's consent screen fetches this URL,
@@ -861,6 +1054,14 @@ async def privacy_page(request: Request):
 async def terms_page(request: Request):
     return HTMLResponse(render.legal(site.legal_view(
         "terms", signed_in=_account_from_cookie(request) is not None)))
+
+
+@app.get("/contact", response_class=HTMLResponse)
+async def contact_page(request: Request):
+    """The privacy policy pointed at "the contact page" and there wasn't one -- a 404
+    behind a promise on a legal document. A directory reviewer reads that page."""
+    return HTMLResponse(render.legal(site.legal_view(
+        "contact", signed_in=_account_from_cookie(request) is not None)))
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -1012,6 +1213,36 @@ async def admin_triage(request: Request):
         account, f"Updated {feedback_id}."), status_code=200)
 
 
+@app.post("/admin/password", response_class=HTMLResponse)
+async def admin_password(request: Request):
+    """Issue or clear a password for an address. Creates the account if it is new.
+
+    The password is chosen by the admin, never emailed: this exists for handing a
+    reviewer a working login, and the admin is the one doing the handing."""
+    account = _admin_account(request)
+    if account is None:
+        return HTMLResponse("<h1>Not found</h1>", status_code=404)
+    form = await request.form()
+    email = (form.get("email") or "").strip().lower()[:254]
+    action = (form.get("action") or "set").strip()
+    if "@" not in email:
+        return HTMLResponse(admin_console.console(account, "That is not an email address."),
+                            status_code=400)
+    if action == "clear":
+        done = store.clear_password(email)
+        return HTMLResponse(admin_console.console(
+            account, f"Password sign-in removed for {email}." if done
+            else f"{email} had no password."))
+    password = form.get("password") or ""
+    try:
+        store.set_password(email, password)
+    except ValueError as exc:
+        return HTMLResponse(admin_console.console(account, str(exc)), status_code=400)
+    return HTMLResponse(admin_console.console(
+        account, f"Password set for {email}. Hand it over directly; it is not stored "
+                 f"anywhere readable and cannot be shown again."))
+
+
 @app.get("/report/{token}", response_class=HTMLResponse)
 async def full_report(token: str):
     """The full strategy report. Public by signed token, like /r/{token}.
@@ -1022,25 +1253,438 @@ async def full_report(token: str):
     """
     doc = store.get_full_report(token)
     if doc is None:
-        return HTMLResponse("<h1>No such report</h1>", status_code=404)
+        # Built reports are now deleted on the same 30-day clock as everything else they
+        # were derived from, so "gone" is an ordinary outcome for an old shared link and
+        # deserves a page that says which of the two it is rather than a bare heading.
+        return HTMLResponse(render.message_page(
+            "This report is no longer available",
+            "Built reports are kept for 30 days and then removed on schedule. Either this "
+            "link has passed that window, or it never existed.",
+            "Re-running the strategy produces a new report and a new link.",
+            status_link=("/docs", "How to run a backtest")), status_code=410)
     return HTMLResponse(doc, headers={"Cache-Control": "private, max-age=3600"})
+
+
+
+@app.get("/replay/{token}", response_class=HTMLResponse)
+async def replay_page(token: str):
+    """Step through the strategy on the index, entry by entry.
+
+    THE TRACKS ARE NOT IN THE STORED PAYLOAD, so this re-runs the spec the way
+    `build_report` does. They are large -- a year of 1-minute index bars plus a span per
+    trade is megabytes -- and storing them on every backtest would multiply the result
+    table for a page most callers never open.
+
+    `replay.build` releases POSITION-level values only: the index series, and the combined
+    premium of the position. Never a leg price. `release_audit` asserts that on the way
+    out with an allow-list, so a field added to a leg has to be considered rather than
+    merely not-yet-forbidden -- a leak here would arrive dressed as a UI feature.
+    """
+    row = store.get_result_by_token(token)
+    if row is None:
+        return HTMLResponse(render.message_page(
+            "No such replay",
+            "This link does not match any stored result. Replay links are issued "
+            "alongside a report and share its token.",
+            status_link=("/", "Stratify")), status_code=404)
+    payload = json.loads(row["payload_json"])
+    spec_json = row["spec_json"]
+    if not spec_json or spec_json.startswith('{"purged"'):
+        return HTMLResponse(render.message_page(
+            "This backtest has been purged",
+            "Spec bodies are kept for 30 days and then removed on schedule, so this one "
+            "can no longer be re-run. The report itself is still at its own link.",
+            status_link=(f"/r/{token}", "Back to the report")), status_code=410)
+    try:
+        tier = row["tier"] if "tier" in row.keys() else "free"
+    except Exception:                                              # noqa: BLE001
+        tier = "free"
+    token_ctx = engine_db.use_tier(tier)
+    try:
+        # TWO SHAPES, ONE ROUTE -- the same dispatch run_backtest uses. A spec carrying
+        # "legs" is the open protocol and goes through strategy/simulate; anything else
+        # is the v1 preset form. Parsing an open-protocol spec with the preset parser is
+        # what made this 500 on the first try.
+        raw_spec = json.loads(spec_json)
+        general = isinstance(raw_spec, dict) and "legs" in raw_spec
+        if general:
+            parsed = strategy_mod.parse(raw_spec, window=spec_mod.window_for(tier))
+            result = simulate.run(parsed, lots=1)
+        else:
+            parsed = spec_mod.parse(raw_spec, tier=tier)
+            result = backtest.run(parsed, lots=1)
+        track = engine_replay.build(result)
+        engine_replay.release_audit(track)
+    except engine_replay.NotReleasable as exc:
+        return HTMLResponse(render.message_page(
+            "This strategy cannot be replayed",
+            str(exc),
+            "A replay shows the position's combined premium against the index. A "
+            "structure that would need a single leg's price to draw is refused rather "
+            "than approximated.",
+            status_link=(f"/r/{token}", "Back to the report")), status_code=200)
+    except Exception:                                              # noqa: BLE001
+        traceback.print_exc()
+        return HTMLResponse(render.message_page(
+            "The replay could not be built",
+            "Re-running this strategy did not produce a replayable track.",
+            status_link=(f"/r/{token}", "Back to the report")), status_code=500)
+    finally:
+        engine_db.current_user.reset(token_ctx)
+
+    return HTMLResponse(replay_view.render(
+        payload, track, report_url=f"{PUBLIC_BASE_URL.rstrip(chr(47))}/r/{token}"))
+
+# ---------------------------------------------------------------- OAuth 2.1
+#
+# The authorization server. It exists because every browser assistant -- ChatGPT, the
+# Gemini web app, Gemini Business, and Anthropic's Connectors Directory -- refuses a bearer
+# API key. See mcpauth.py for the security model; these routes are the HTTP surface.
+
+
+def _oauth_error(exc, request):
+    return JSONResponse(exc.body(), status_code=exc.status,
+                        headers={"Cache-Control": "no-store"})
+
+
+def _prm(request):
+    return mcpauth.protected_resource_metadata(_mcp_url(request), _base_url(request))
+
+
+# BOTH SPELLINGS, because RFC 9728 §3.1 says a client whose resource URL has a path
+# component tries the path-suffixed form first, and not every client does. Serving one and
+# not the other is a discovery failure that looks like "couldn't reach the MCP server".
+@app.get("/.well-known/oauth-protected-resource")
+async def prm_root(request: Request):
+    return JSONResponse(_prm(request))
+
+
+@app.get("/.well-known/oauth-protected-resource/mcp")
+async def prm_mcp(request: Request):
+    return JSONResponse(_prm(request))
+
+
+@app.get("/.well-known/oauth-authorization-server")
+async def authorization_server_metadata(request: Request):
+    return JSONResponse(mcpauth.authorization_server_metadata(_base_url(request)))
+
+
+# Some clients probe the OIDC spelling before the OAuth one.
+@app.get("/.well-known/openid-configuration")
+async def openid_configuration(request: Request):
+    return JSONResponse(mcpauth.authorization_server_metadata(_base_url(request)))
+
+
+@app.post("/oauth/register")
+async def oauth_register(request: Request):
+    """RFC 7591. Unauthenticated by specification, and mandatory for ChatGPT.
+
+    Open registration is safe here because a client_id alone reaches nothing: it becomes
+    useful only after a signed-in human approves it on the consent screen. It does cost a
+    row, so it is rate-limited per source address inside mcpauth.register.
+    """
+    try:
+        body = await _read_json(request)
+    except BodyTooLarge as exc:
+        return JSONResponse({"error": "invalid_client_metadata",
+                             "error_description": str(exc)}, status_code=413)
+    except Exception:
+        return JSONResponse({"error": "invalid_client_metadata",
+                             "error_description": "the body must be JSON"},
+                            status_code=400)
+    try:
+        out = mcpauth.register(body, ip_hash=store.hash_ip(_client_ip(request)))
+    except mcpauth.OAuthError as exc:
+        return _oauth_error(exc, request)
+    return JSONResponse(out, status_code=201, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/oauth/authorize", response_class=HTMLResponse)
+async def oauth_authorize(request: Request):
+    """The consent screen.
+
+    IT REQUIRES AN EXISTING SESSION AND NEVER CREATES ONE. Identity comes from Google
+    sign-in; this endpoint only decides whether an already-identified person wants to give
+    a particular client access. A signed-out visitor is sent to sign in and returned here.
+    """
+    params = dict(request.query_params)
+    try:
+        ctx = mcpauth.begin(params)
+    except mcpauth.OAuthError as exc:
+        # SHOWN ON OUR OWN PAGE, never bounced to the redirect. A malformed client_id or
+        # an unregistered redirect_uri is exactly the case where sending anything to that
+        # address would be the bug -- it is not a destination we have agreed to trust.
+        return HTMLResponse(render.message_page(
+            "This app cannot be connected",
+            exc.description,
+            "Nothing has been shared. If you were sent here by an application, it has "
+            "been configured incorrectly.",
+            status_link=("/", "Stratify")), status_code=400)
+
+    account = _account_from_cookie(request)
+    if account is None:
+        # STRAIGHT TO SIGN-IN, not to the landing page. The landing page renders and
+        # ignores `next`, so bouncing there would drop the authorization request on the
+        # floor and leave the user signed in, on the homepage, with no idea what happened
+        # to the app that sent them. /auth/google carries `next` through Google and back,
+        # and _safe_next keeps it a path on this site.
+        nxt = "/oauth/authorize?" + urllib.parse.urlencode(params)
+        # /login shows the Google button and, folded away, the issued-password form.
+        # It carries `next` to whichever path is taken, and _safe_next keeps it on this
+        # site. Going straight to Google would strand anyone whose sign-in is a password.
+        return RedirectResponse(f"/login?next={urllib.parse.quote(nxt)}", status_code=302)
+
+    return HTMLResponse(render.consent(site.consent_view(
+        account, ctx, params, offline=mcpauth.OFFLINE in ctx["scope"].split())))
+
+
+@app.post("/oauth/authorize")
+async def oauth_authorize_submit(request: Request):
+    form = dict(await request.form())
+    params = {k: v for k, v in form.items() if k not in ("decision",)}
+    try:
+        ctx = mcpauth.begin(params)
+    except mcpauth.OAuthError as exc:
+        return HTMLResponse(render.message_page(
+            "This app cannot be connected", exc.description,
+            status_link=("/", "Stratify")), status_code=400)
+
+    account = _account_from_cookie(request)
+    if account is None:
+        return HTMLResponse(render.message_page(
+            "Your session expired",
+            "Sign in again and the application will ask a second time.",
+            status_link=("/", "Sign in")), status_code=401)
+
+    if form.get("decision") != "allow":
+        # A refusal is reported to the CLIENT in the OAuth way, so it can say something
+        # useful, rather than left as a dead browser tab.
+        return RedirectResponse(mcpauth.redirect_with(
+            ctx["redirect_uri"], error="access_denied",
+            error_description="the user declined", state=ctx["state"]), status_code=302)
+
+    code = mcpauth.issue_code(ctx, account["account_id"])
+    return RedirectResponse(
+        mcpauth.redirect_with(ctx["redirect_uri"], code=code, state=ctx["state"]),
+        status_code=302)
+
+
+@app.post("/oauth/token")
+async def oauth_token(request: Request):
+    """RFC 6749 §4.1.3 — form-encoded, never JSON.
+
+    Claude sends both the initial exchange and every refresh with
+    application/x-www-form-urlencoded, and a JSON-only parser here returns 415 and breaks
+    the flow. /oauth/register, by contrast, is JSON per RFC 7591: two endpoints, two
+    content types, and assuming one parser serves both is a documented way to fail.
+    """
+    form = dict(await request.form())
+    grant = form.get("grant_type")
+    try:
+        if grant == "authorization_code":
+            out = mcpauth.exchange_code(form)
+        elif grant == "refresh_token":
+            out = mcpauth.refresh(form)
+        else:
+            raise mcpauth.OAuthError(
+                "unsupported_grant_type",
+                f"grant_type {grant!r} is not supported; this server issues tokens for "
+                f"authorization_code and refresh_token only. A client_credentials grant "
+                f"is deliberately absent: every connection needs a consenting user.")
+    except mcpauth.OAuthError as exc:
+        return _oauth_error(exc, request)
+    return JSONResponse(out, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+
+@app.post("/app/connections/revoke", response_class=HTMLResponse)
+async def revoke_connection(request: Request):
+    """Disconnect an application.
+
+    A grant a user cannot see is a grant they cannot withdraw, and "revoke access" is the
+    half of OAuth that usually goes missing. Revoking the FAMILY, not the single token,
+    is what actually ends the connection -- a client holding a refresh token would
+    otherwise mint a new access token seconds later.
+    """
+    account = _account_from_cookie(request)
+    if account is None:
+        return RedirectResponse("/", status_code=302)
+    form = dict(await request.form())
+    client_id = form.get("client_id", "")
+    n = 0
+    for row in store.oauth_connections(account["account_id"]):
+        if row["client_id"] == client_id:
+            for tok in store.oauth_tokens_for(account["account_id"], client_id):
+                n += store.revoke_oauth_family(tok["family_id"])
+    return HTMLResponse(render.keys(site.keys_view(
+        account,
+        message=(f"Disconnected. {n} grant(s) revoked; that application must be "
+                 f"re-authorised before it can call again."
+                 if n else "That application was not connected."))))
+
+
+@app.post("/oauth/revoke")
+async def oauth_revoke(request: Request):
+    form = dict(await request.form())
+    return JSONResponse(mcpauth.revoke(form), headers={"Cache-Control": "no-store"})
+
+
+# ---------------------------------------------------------------- waitlist
+
+def _valid_email(email):
+    email = (email or "").strip()
+    return "@" in email and "." in email.split("@")[-1] and 3 < len(email) <= 254
+
+
+async def _join_waitlist(request, email, source):
+    """Shared by the JSON and form routes. -> (status, created, message)."""
+    account = _account_from_cookie(request)
+    if account is not None and not email:
+        email = account["email"]
+    if not _valid_email(email):
+        return 400, False, "That is not a valid email address."
+    try:
+        ip_hash = quota.check_waitlist(_client_ip(request))
+    except quota.QuotaExceeded as exc:
+        return 429, False, exc.message
+    created = store.join_waitlist(
+        email, account_id=account["account_id"] if account else None,
+        ip_hash=ip_hash, source=source)
+    return 200, created, ("You're on the list. We'll write to you when it exists."
+                          if created else "You're already on the list — nothing to do.")
+
+
+@app.post("/v1/waitlist")
+async def waitlist_json(request: Request):
+    try:
+        body = await _read_json(request)
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    status, created, msg = await _join_waitlist(request, (body or {}).get("email"),
+                                                source="api")
+    return JSONResponse({"ok": status == 200, "created": created, "message": msg},
+                        status_code=status)
+
+
+@app.post("/waitlist", response_class=HTMLResponse)
+async def waitlist_form(request: Request):
+    form = await request.form()
+    status, created, msg = await _join_waitlist(request, form.get("email"), source="site")
+    account = _account_from_cookie(request)
+    return HTMLResponse(render.pricing(site.pricing_view(
+        _base_url(request), account, message=msg, joined=(status == 200))),
+        status_code=status)
 
 
 @app.get("/healthz")
 async def healthz():
+    """LIVENESS. Deliberately dependency-free, because Docker restarts the container when
+    this fails and restarting cures exactly one class of problem: this process being wedged.
+
+    It must NOT check ClickHouse. If it did, a database blip would restart a perfectly
+    healthy app — turning a partial outage, where cached and metadata routes still answer,
+    into a total one, and adding a restart storm on top of whatever is already wrong.
+    Dependencies are checked by /readyz, which reports rather than kills.
+    """
     return {"ok": True, "ts": time.time()}
+
+
+@app.get("/readyz")
+async def readyz():
+    """READINESS — can this instance actually serve a backtest right now?
+
+    /healthz answered `{"ok": true}` while ClickHouse could be unreachable, the service
+    database read-only, or the served window silently short of the range the tier
+    advertises. Every one of those is invisible to a liveness probe and fatal to a user,
+    so this is what the watchdog and any uptime monitor should watch.
+
+    Each dependency is reported separately: "which one is broken" is the first question
+    anyone asks at 3 a.m., and a single boolean never answers it. 503 when any check
+    fails, so a monitor needs no body parsing to alarm.
+    """
+    checks, t0 = {}, time.time()
+
+    # 1. ClickHouse: reachable AND actually serving the window the free tier advertises.
+    #    Reachability alone is not readiness — a rebuilt-but-unfilled table answers
+    #    queries instantly and backtests every strategy to zero trades.
+    try:
+        win_from, win_to = spec_mod.window_for("free")
+        got = engine_db.rows(
+            "SELECT min(trade_date) AS lo, max(trade_date) AS hi, "
+            "       uniqExact(trade_date) AS days "
+            "FROM stratify.contract_day WHERE trade_date BETWEEN %(a)s AND %(b)s",
+            {"a": str(win_from), "b": str(win_to)})[0]
+        days = int(got["days"] or 0)
+        ok = days >= MIN_TRADING_DAYS_SERVED and got["lo"] is not None
+        checks["clickhouse"] = {
+            "ok": ok, "trading_days": days,
+            "serving": [str(got["lo"]), str(got["hi"])],
+            "expected_window": [str(win_from), str(win_to)],
+            **({} if ok else {"error": f"only {days} trading days in the tier window; "
+                              f"expected at least {MIN_TRADING_DAYS_SERVED}"})}
+    except Exception as exc:                                       # noqa: BLE001
+        checks["clickhouse"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+    # 2. The service database, checked by WRITING. A read proves far less: the volume can
+    #    be mounted read-only, or the disk full, and every SELECT still succeeds while
+    #    signup, key issuance and usage metering all fail.
+    try:
+        store.health_probe()
+        checks["service_db"] = {"ok": True, "path": str(store.DB_PATH)}
+    except Exception as exc:                                       # noqa: BLE001
+        checks["service_db"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+    ok = all(c["ok"] for c in checks.values())
+    return JSONResponse(
+        {"ok": ok, "checks": checks, "took_ms": round((time.time() - t0) * 1000, 1),
+         "version": SERVER_INFO.get("version")},
+        status_code=200 if ok else 503)
 
 
 @app.get("/r/{token}", response_class=HTMLResponse)
 async def report(token: str):
-    """The hosted report and the artifact are the SAME document.
+    """The shared report page for one stored result.
 
-    They were two renderers briefly, and two renderers of one backtest is two sets of
-    numbers waiting to disagree. `server/artifact.py` is the only one; this route serves
-    it over HTTP and `build_report` hands the identical bytes to a model to publish.
+    THE COMMENT THAT USED TO BE HERE CLAIMED artifact.py WAS THE ONLY RENDERER. It stopped
+    being true when fullreport.py was added, and the thing it warned about duly happened:
+    the same backtest read +Rs 5.1k here and -Rs 4.99 L there, because this page is unsized
+    and that one applies a capital model. Both are correct answers to different questions.
+    The page now names its unit instead of leaving a reader to discover the difference.
+
+    Renders the STORED payload -- what the caller actually released -- so a shared link can
+    never show more than the backtest disclosed. `build_report` re-runs the spec and is
+    metered separately; that is the deliberate difference between the two.
     """
     row = store.get_result_by_token(token)
     if row is None:
-        return HTMLResponse("<h1>No such report</h1>", status_code=404)
-    return HTMLResponse(artifact_report.render(json.loads(row["payload_json"]),
-                                               row["backtest_id"]))
+        return HTMLResponse(render.message_page(
+            "No such report",
+            "This link does not match any stored result. Report links are long random "
+            "tokens, so a link that does not resolve was either mistyped or never issued.",
+            status_link=("/", "Stratify")), status_code=404)
+
+    # RETENTION MEETS A SHARED LINK. Result bodies are purged after 30 days (decision G2,
+    # executed nightly by purge.sh), which replaces the payload with a tombstone. Rendering
+    # a tombstone does not fail -- it produced a fully-formed report reading "no verdict",
+    # "None/100" and "Nothing to chart", which is worse than an error, because it looks
+    # like the strategy was measured and found to be nothing. These links get shared, and
+    # a month later every one of them said that. Say what actually happened instead.
+    payload_raw = row["payload_json"] or ""
+    if payload_raw.startswith('{"purged"'):
+        return HTMLResponse(render.message_page(
+            "This report has expired",
+            "Backtest results are kept for 30 days and then removed on schedule, so the "
+            "numbers behind this link no longer exist. Nothing went wrong — this is the "
+            "retention policy the service publishes, applied.",
+            "Re-run the strategy to get a fresh report with a fresh link.",
+            status_link=("/docs", "How to run a backtest")), status_code=410)
+
+    try:
+        payload = json.loads(payload_raw)
+    except ValueError:
+        return HTMLResponse(render.message_page(
+            "This report could not be read",
+            "The stored result for this link is unreadable. Re-run the strategy to "
+            "produce a new one.",
+            status_link=("/docs", "How to run a backtest")), status_code=500)
+    return HTMLResponse(reportui.render(payload, row["backtest_id"],
+                                        report_token=token))

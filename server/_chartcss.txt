@@ -1,0 +1,70 @@
+/* from server/design.py CHART_CSS -- the classes the report already draws */
+svg text{font:400 10.5px/1 MONOSTACK}
+.tk{fill:var(--faint);font-size:10px}
+.cap{fill:var(--muted);font-size:10.5px}
+.cl{fill:var(--surface);font-size:9.5px;font-weight:600}
+.zero{stroke:var(--faint);opacity:.5;stroke-width:1}
+.dash{stroke:var(--faint);stroke-dasharray:3 3;opacity:.7;stroke-width:1}
+.ln{stroke:var(--accent);stroke-width:1.8;fill:none;stroke-linejoin:round}
+.ln-b{stroke:var(--crit);stroke-width:1.4;fill:none}
+.ln-w{stroke:var(--warn);stroke-width:1.6;fill:none}
+.ar{fill:var(--accent);opacity:.11}
+.ar-b{fill:var(--crit);opacity:.13}
+.ar-w{fill:var(--warn);opacity:.13}
+.bg{fill:var(--good);opacity:.82}
+.bb{fill:var(--crit);opacity:.82}
+.ba{fill:var(--accent);opacity:.88}
+.bm{fill:var(--faint);opacity:.55}
+.dg{fill:var(--good)}.db{fill:var(--crit)}.da{fill:var(--accent)}
+.lg{fill:var(--good);font-size:10px;font-weight:600}
+.lb{fill:var(--crit);font-size:10px;font-weight:600}
+.la{fill:var(--accent);font-size:10px;font-weight:600}
+.lm{fill:var(--muted);font-size:10px}
+.band-g{fill:var(--good);opacity:.09}
+.band-b{fill:var(--crit);opacity:.07}
+.band-a{fill:var(--accent);opacity:.08}
+.pt-g{fill:var(--good);opacity:.5}
+.pt-b{fill:var(--crit);opacity:.55}
+
+/* from context/visuals/visuals.css -- the catalogue-only classes */
+/* ---------- catalogue-only chart classes ----------
+   These belong to elements that are specified but NOT yet shipped in the report. Anything
+   the report already draws inherits its class from server/design.py above. */
+.axis-zero{stroke:var(--faint);stroke-width:1;opacity:.55}
+.guide-dash{stroke:var(--faint);stroke-width:1;stroke-dasharray:3 3;opacity:.75}
+.guide-solid{stroke:var(--accent);stroke-width:1.25;opacity:.8}
+.guide-bad{stroke:var(--crit);stroke-width:1.25;stroke-dasharray:4 3}
+.payoff-line{stroke:var(--accent);stroke-width:2.25;stroke-linejoin:round}
+.pnl-line{stroke:var(--accent);stroke-width:1.9;stroke-linejoin:round}
+.dd-line{stroke:var(--crit);stroke-width:1.4}
+.warn-line{stroke:var(--warn);stroke-width:1.6}
+.area-soft{fill:var(--accent);opacity:.10;stroke:none}
+.area-bad{fill:var(--crit);opacity:.13;stroke:none}
+.area-warn{fill:var(--warn);opacity:.13;stroke:none}
+.area-fill{stroke:none}
+.g0{stop-color:var(--accent);stop-opacity:.22}
+.g1{stop-color:var(--accent);stop-opacity:.02}
+.band-good{fill:var(--good);opacity:.09}
+.band-bad{fill:var(--crit);opacity:.07}
+.band-settle{fill:var(--accent);opacity:.08}
+.dot-good{fill:var(--good)}.dot-bad{fill:var(--crit)}.dot-end{fill:var(--accent)}
+.lbl-good{fill:var(--good);font-size:10.5px;font-weight:500}
+.lbl-bad{fill:var(--crit);font-size:10.5px;font-weight:500}
+.lbl-end{fill:var(--accent);font-size:10.5px;font-weight:500}
+.lbl-mut{fill:var(--muted);font-size:10.5px}
+.pt-good{fill:var(--good);opacity:.5}
+.pt-bad{fill:var(--crit);opacity:.55}
+.bar-good{fill:var(--good);opacity:.82}
+.bar-bad{fill:var(--crit);opacity:.82}
+.bar-net{fill:var(--accent);opacity:.9}
+.bar-mut{fill:var(--faint);opacity:.6}
+.cell-good{fill:var(--good)}.cell-bad{fill:var(--crit)}
+.cell-lbl{fill:var(--surface);font-size:10px;font-weight:500}
+.cndl-up{fill:var(--good);stroke:var(--good)}
+.cndl-dn{fill:var(--crit);stroke:var(--crit)}
+.wick{stroke-width:1;fill:none}
+.strike-short{stroke:var(--crit);stroke-width:1.2;stroke-dasharray:5 3;opacity:.9}
+.strike-long{stroke:var(--faint);stroke-width:1;stroke-dasharray:2 3;opacity:.8}
+.cross-line{stroke:var(--ink);stroke-width:.8;opacity:.45}
+.readout{fill:var(--ink);font-size:10.5px;font-weight:500}
+.tick{fill:var(--faint);font-size:10.5px}

@@ -2,16 +2,24 @@
 
 Access is deliberately unguarded in every other respect: public signup, self-serve key, no
 approval and no manual review. That makes these limits load-bearing rather than a
-formality, so they are enforced on THREE independent dimensions, because any single one
+formality, so they are enforced on FIVE independent dimensions, because any single one
 can be gamed:
 
-  * requests per hour   — stops a naive loop
+  * backtests per hour   — stops a naive loop on the expensive tools
+  * metadata calls/hour  — the same, an order of magnitude looser, for the cheap ones
   * CPU-seconds per hour — stops a small number of very expensive queries
-  * concurrency          — stops a burst from monopolising the box regardless of the above
+  * price points per hour — stops extraction dressed as research
+  * concurrency          — stops a burst monopolising the box regardless of the above
 
 Free tier (decision D2): 100 backtests/hour, 60 CPU-seconds/hour, 2 concurrent. At the
 measured ~1.5 CPU-seconds for a full-year backtest, 60 CPU-seconds is roughly 40 heavy
 runs or many hundreds of cheap ones — generous for real use, tight against abuse.
+
+BACKTESTS AND METADATA ARE COUNTED SEPARATELY. They shared one counter until it became
+clear what that meant in practice: the server instructions tell a model to read the
+coverage and the methodology before running anything, so following them spent most of a
+user's hundred "backtests" on calls that ran no backtest — and then said so in the
+refusal. Reading the rules should not cost you the runs.
 
 METERED PER ACCOUNT, NOT PER KEY. Metering per key made the whole system decorative:
 signup was unthrottled, so anyone could mint a fresh key with a fresh allowance in a loop.
@@ -45,16 +53,26 @@ class Tier:
     # because strike selection follows spot. CPU binds first for any realistic caller; this
     # is the limit that binds a caller whose purpose is extraction rather than research.
     price_points_per_hour: int = 20_000
+    # A FIFTH dimension, separating the two things that were sharing one counter.
+    # `requests_per_hour` above now means BACKTESTS: calls that run the engine. Reading
+    # the coverage, the methodology or your own history is metered here instead, an order
+    # of magnitude higher, because it is cheap and because SERVER_INSTRUCTIONS actively
+    # tells a model to do it before running anything. Charging that to the backtest
+    # allowance meant the careful path cost the user two thirds of their runs.
+    #
+    # It is still a limit, not an exemption: metadata calls hit ClickHouse and cost CPU,
+    # and an agent stuck in a loop calling describe_coverage is still an agent in a loop.
+    metadata_requests_per_hour: int = 1_000
 
 
 TIERS = {
-    "free":  Tier("free", 100, 60.0, 2, 20_000),
-    "plus":  Tier("plus", 1000, 900.0, 6, 400_000),
-    "pro":   Tier("pro", 10000, 7200.0, 16, 4_000_000),
+    "free":  Tier("free", 100, 60.0, 2, 20_000, 1_000),
+    "plus":  Tier("plus", 1000, 900.0, 6, 400_000, 10_000),
+    "pro":   Tier("pro", 10000, 7200.0, 16, 4_000_000, 100_000),
     # Capacity testing only. Never issued to a real account -- it exists so a load test
     # measures the machine rather than the rate limiter, which is otherwise the first
     # thing it hits.
-    "bench": Tier("bench", 10_000_000, 1e9, 512, 10**12),
+    "bench": Tier("bench", 10_000_000, 1e9, 512, 10**12, 10_000_000),
 }
 
 
@@ -74,6 +92,15 @@ TIER_GLOBAL_CONCURRENCY = {"free": None, "plus": _PAID_CAP, "pro": _PAID_CAP,
 SIGNUPS_PER_IP_PER_HOUR = 3
 SIGNUPS_PER_IP_PER_DAY = 10
 MAX_ACTIVE_KEYS_PER_ACCOUNT = 5
+# The waitlist is a free write from an unauthenticated form. Looser than signup -- it
+# creates no account and grants nothing -- but still bounded, or it is a way to fill the
+# database with one curl loop.
+WAITLIST_PER_IP_PER_HOUR = 10
+# Issued-password sign-in. Two independent locks: per address, so one machine cannot
+# spray, and per email, so a distributed guess at one account stalls too. Successes do
+# not count; a person who mistypes twice is not an attacker.
+LOGIN_FAILURES_PER_IP_PER_HOUR = 20
+LOGIN_FAILURES_PER_EMAIL_PER_HOUR = 8
 
 
 class QuotaExceeded(Exception):
@@ -150,6 +177,33 @@ def check_signup(ip, now=None):
     return ip_hash
 
 
+def check_waitlist(ip, now=None):
+    now = now if now is not None else time.time()
+    ip_hash = store.hash_ip(ip or "unknown")
+    n = store.waitlist_since(ip_hash, now - 3600)
+    if n >= WAITLIST_PER_IP_PER_HOUR:
+        raise QuotaExceeded(
+            "waitlist_per_hour",
+            f"{n} waitlist entries from this address in the last hour.",
+            retry_after_seconds=3600)
+    return ip_hash
+
+
+def check_login(ip, email, now=None):
+    """Raises QuotaExceeded when either lock is on. Returns the ip hash for logging."""
+    now = now if now is not None else time.time()
+    ip_hash = store.hash_ip(ip or "unknown")
+    if store.login_failures_since(now - 3600, ip_hash=ip_hash) >= LOGIN_FAILURES_PER_IP_PER_HOUR:
+        raise QuotaExceeded("login_failures_per_ip",
+                            "Too many failed sign-ins from this address. Try again in an hour.",
+                            retry_after_seconds=3600)
+    if store.login_failures_since(now - 3600, email=email) >= LOGIN_FAILURES_PER_EMAIL_PER_HOUR:
+        raise QuotaExceeded("login_failures_per_email",
+                            "Too many failed sign-ins for this account. Try again in an hour.",
+                            retry_after_seconds=3600)
+    return ip_hash
+
+
 def check_key_issuance(account_id):
     n = store.active_key_count(account_id)
     if n >= MAX_ACTIVE_KEYS_PER_ACCOUNT:
@@ -169,8 +223,12 @@ def snapshot(account_id, tier, now=None):
     usage and enforcing a limit are different jobs and now have different functions.
     """
     now = now if now is not None else time.time()
-    n_requests, cpu, pts = store.usage_since(account_id, now - WINDOW_SECONDS)
+    n_requests, n_meta, cpu, pts = store.usage_since(account_id, now - WINDOW_SECONDS)
     return {"requests_used": n_requests, "requests_limit": tier.requests_per_hour,
+            "requests_meaning": "backtests and built reports; other tools are metered "
+                                "separately and do not spend this",
+            "metadata_requests_used": n_meta,
+            "metadata_requests_limit": tier.metadata_requests_per_hour,
             "cpu_seconds_used": round(cpu, 3),
             "cpu_seconds_limit": tier.cpu_seconds_per_hour,
             "price_points_used": int(pts),
@@ -183,15 +241,30 @@ def snapshot(account_id, tier, now=None):
                          or pts >= tier.price_points_per_hour}
 
 
-def check(account_id, tier, key_id=None, now=None):
-    """Raises QuotaExceeded, or returns the current usage snapshot."""
+def check(account_id, tier, key_id=None, now=None, billable=True):
+    """Raises QuotaExceeded, or returns the current usage snapshot.
+
+    `billable` says which call-count ceiling applies. Backtests spend the small one people
+    care about; metadata spends a separate, far larger one. CPU-seconds and price points
+    are checked for BOTH, because those measure real consumption regardless of which tool
+    caused it.
+    """
     now = now if now is not None else time.time()
-    n_requests, cpu, pts = store.usage_since(account_id, now - WINDOW_SECONDS)
-    if n_requests >= tier.requests_per_hour:
+    n_requests, n_meta, cpu, pts = store.usage_since(account_id, now - WINDOW_SECONDS)
+    if billable and n_requests >= tier.requests_per_hour:
         raise QuotaExceeded(
             "requests_per_hour",
             f"{n_requests} of {tier.requests_per_hour} backtests used in the last hour "
-            f"on the {tier.name} tier.",
+            f"on the {tier.name} tier. Reading coverage, methodology or your own history "
+            f"does not spend this allowance.",
+            retry_after_seconds=_retry_after(account_id, now))
+    if not billable and n_meta >= tier.metadata_requests_per_hour:
+        raise QuotaExceeded(
+            "metadata_requests_per_hour",
+            f"{n_meta} of {tier.metadata_requests_per_hour} metadata calls used in the "
+            f"last hour on the {tier.name} tier. These are the cheap tools — coverage, "
+            f"methodology, search, your own history — and hitting this ceiling usually "
+            f"means a client is looping. Your backtest allowance is untouched.",
             retry_after_seconds=_retry_after(account_id, now))
     if cpu >= tier.cpu_seconds_per_hour:
         raise QuotaExceeded(
@@ -209,14 +282,7 @@ def check(account_id, tier, key_id=None, now=None):
             f"detail='summary' returns aggregates and costs nothing against this limit; "
             f"report_url shows every trade without spending it either.",
             retry_after_seconds=_retry_after(account_id, now))
-    return {"requests_used": n_requests, "requests_limit": tier.requests_per_hour,
-            "cpu_seconds_used": round(cpu, 3),
-            "cpu_seconds_limit": tier.cpu_seconds_per_hour,
-            "price_points_used": int(pts),
-            "price_points_limit": tier.price_points_per_hour,
-            "concurrent_active": CONCURRENCY.active(account_id),
-            "concurrent_limit": tier.max_concurrent,
-            "metered_on": "account"}
+    return snapshot(account_id, tier, now=now)
 
 
 def _retry_after(account_id, now):

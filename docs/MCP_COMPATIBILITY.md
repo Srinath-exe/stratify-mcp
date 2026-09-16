@@ -38,6 +38,10 @@ never the primary path.
 **A bearer-token-only server reaches Claude but NOT ChatGPT.** ChatGPT connectors
 authenticate with *none* or *OAuth* only; there is no API-key-header option in its UI.
 
+*Resolved 2026-09-06:* the server now speaks OAuth 2.1 itself (`server/mcpauth.py`); both
+columns are served. Unauthenticated `tools/call` answers HTTP 401 with a
+`WWW-Authenticate` challenge that points at the protected-resource metadata.
+
 ### Consequence for us
 
 Our "one API key from the dashboard, paste it in" model works beautifully on Claude and is

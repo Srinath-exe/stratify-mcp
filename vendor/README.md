@@ -56,3 +56,12 @@ that uses it carries a caveat saying so. Read the docstring at the top of
 A live paper-trading book recording `entry_slippage_pts` / `exit_slippage_pts` per fill.
 `engine/config/slippage.py` switches from the assumed half-spread to the measured one once
 the book holds 30 fills, and reports which of the two it used.
+
+## Not an input: `context/visuals/charts.js`
+
+`server/reportlab.py`'s `build()` -- the design lab that renders every card specimen onto
+one page -- reads a chart script from a design directory that is not part of this
+repository. The lab is a development surface; the report users receive (`server/reportui.py`)
+embeds its chart CSS from `server/_chartcss.txt` and draws its charts itself, so nothing
+at runtime depends on that directory.
+

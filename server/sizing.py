@@ -16,13 +16,35 @@ DEFAULT_CAPITAL = 1_000_000        # Rs 10 lakh
 DEFAULT_DEPLOY = 0.10              # a tenth of capital as margin on any one trade
 MIN_LOTS = 1
 
+# HOW OFTEN THE SIZE IS RECALCULATED, which is a real decision and not a boolean.
+# "Compounding: yes/no" describes two ends of a range nobody actually trades. Resizing
+# after every single trade assumes you re-run the arithmetic at 3pm on a Thursday because
+# one condor settled; never resizing assumes you ignore a year of profit. In practice
+# people resize on a cycle -- the start of a month, the start of a quarter -- and the
+# choice matters, because it decides whether a drawdown shrinks your next position or you
+# keep pressing at the old size all the way down.
+REBASE = ("trade", "week", "month", "quarter", "never")
+
+
+def _period_key(date_str, rebase):
+    """The bucket a trade falls in. A new bucket is when the size is recalculated."""
+    if rebase == "month":
+        return date_str[:7]
+    if rebase == "quarter":
+        return f"{date_str[:4]}Q{(int(date_str[5:7]) - 1) // 3}"
+    if rebase == "week":
+        from datetime import date, timedelta
+        d = date(int(date_str[:4]), int(date_str[5:7]), int(date_str[8:10]))
+        return str(d - timedelta(days=d.weekday()))
+    return ""
+
 
 class SizingError(ValueError):
     """The requested sizing rule cannot be applied to these trades, and says why."""
 
 
 def apply(trades, capital=DEFAULT_CAPITAL, deploy=DEFAULT_DEPLOY, compounding=True,
-          risk_pct=None):
+          risk_pct=None, rebase=None):
     """Replay the trades at a position size, in order. Returns the sized series + stats.
 
     TWO WAYS TO SIZE, and they answer different questions.
@@ -50,6 +72,14 @@ def apply(trades, capital=DEFAULT_CAPITAL, deploy=DEFAULT_DEPLOY, compounding=Tr
     taken = skipped = 0
     max_dd = max_dd_pct = 0.0
     lots_used = []
+    # `compounding` stays the interface everything already calls with; `rebase` refines it
+    # and wins when given. The two ends of the range are the old booleans exactly, so a
+    # caller that never heard of rebase gets the behaviour it always got.
+    if rebase is None:
+        rebase = "trade" if compounding else "never"
+    if rebase not in REBASE:
+        raise SizingError(f"rebase must be one of {', '.join(REBASE)}")
+    base_equity, last_key = capital, None
     if risk_pct is not None:
         _require_bounded_risk(trades, risk_pct)
     for t in trades:
@@ -57,7 +87,11 @@ def apply(trades, capital=DEFAULT_CAPITAL, deploy=DEFAULT_DEPLOY, compounding=Tr
         if pnl_1 is None or not mp or not ls:
             continue
         margin_per_lot = float(mp) * float(ls)
-        base = equity if compounding else capital
+        key = _period_key((t.get("exit") or t.get("entry") or "")[:10], rebase)
+        if key != last_key:
+            base_equity, last_key = equity, key
+        base = (equity if rebase == "trade"
+                else capital if rebase == "never" else base_equity)
         if risk_pct is None:
             allowance = base * deploy
             lots = int(math.floor(allowance / margin_per_lot)) if margin_per_lot > 0 else 0
@@ -103,7 +137,8 @@ def apply(trades, capital=DEFAULT_CAPITAL, deploy=DEFAULT_DEPLOY, compounding=Tr
         "years": round(years, 2),
         "deploy_pct": round(deploy * 100, 1) if risk_pct is None else None,
         "risk_pct": round(risk_pct * 100, 2) if risk_pct is not None else None,
-        "compounding": compounding,
+        "compounding": rebase != "never",
+        "rebase": rebase,
         "max_drawdown_rupees": round(max_dd, 2),
         "max_drawdown_pct": round(max_dd_pct * 100, 2),
         "trades_taken": taken,
@@ -114,17 +149,22 @@ def apply(trades, capital=DEFAULT_CAPITAL, deploy=DEFAULT_DEPLOY, compounding=Tr
         "curve": curve,
         "basis": (
             (f"Rs {capital:,.0f} starting capital, up to {deploy * 100:.0f}% of "
-             f"{'running' if compounding else 'starting'} capital as margin on any one "
+             f"{_basis_words(rebase)} capital as margin on any one "
              f"trade. Lots are whole numbers, so the size steps rather than scales "
              f"smoothly, and a trade needing more margin than the allowance is skipped "
              f"rather than taken undersized.")
             if risk_pct is None else
             (f"Rs {capital:,.0f} starting capital, risking at most {risk_pct * 100:.2f}% "
-             f"of {'running' if compounding else 'starting'} capital per trade against "
+             f"of {_basis_words(rebase)} capital per trade against "
              f"the ENTRY structure's maximum loss, capped by the margin the account could "
              f"actually block. A trade that is adjusted can finish wider than it opened, "
              f"so a realised loss may exceed the budget it was sized against.")),
     }
+
+
+def _basis_words(rebase):
+    return {"trade": "running", "never": "starting", "week": "week-start",
+            "month": "month-start", "quarter": "quarter-start"}[rebase]
 
 
 def _years(trades):

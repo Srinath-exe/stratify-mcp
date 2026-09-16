@@ -205,7 +205,7 @@ def _field(name, leg_slot, pos, st, lot_size, lots):
     if name == "credit_kept_pct":
         c = pos.credit_at_entry
         return (c - st["cost"]) / c if c else None
-    if name in strat_mod.MARKET_FIELDS:
+    if strat_mod.is_market_field(name):
         day = st["market"]
         if name == "vix":
             return st["vix"]
@@ -925,6 +925,14 @@ def run(strat, lots=1):
     # Fetched unconditionally rather than only when a rule needs it, because it is smaller
     # than the decision about whether to fetch it.
     market = marks.market_days(strat.date_from, strat.date_to)
+    # Index indicators, only for the fields this strategy names. Merged into the same
+    # per-day dict so a rule reads rsi_14 exactly the way it reads gap_pct.
+    indicators = strat.indicators
+    if indicators:
+        for d, vals in marks.indicator_days(strat.date_from, strat.date_to,
+                                            indicators).items():
+            if d in market:
+                market[d].update(vals)
     for chunk in _chunks(cycles, CYCLE_CHUNK):
         vix_entry = marks.vix_series(
             dt.datetime.combine(min(c["date"] for c in chunk),

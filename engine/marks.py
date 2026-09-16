@@ -395,3 +395,103 @@ def _trading_days_cached(date_from, date_to, database, ch_user):
             WHERE toDate(timestamp) BETWEEN %(a)s AND %(b)s ORDER BY d""",
         {"a": date_from, "b": date_to})
     return [r["d"] for r in rows]
+
+
+# ---------------------------------------------------------------- indicators
+
+# How far back to read closes so the longest window is warm on the first day of the run.
+# A 250-session EMA needs roughly 3x its window to converge from a cold start; 1,200
+# calendar days covers that with the holidays in.
+_INDICATOR_WARMUP_DAYS = 1200
+
+
+def indicator_days(d_from, d_to, specs):
+    """{date: {indicator_name: value}} for every session in [d_from, d_to].
+
+    EVERY VALUE IS AS OF 09:15 OF ITS DAY, computed on the closes of the sessions BEFORE
+    it. market_day.prev_close is exactly that series -- yesterday's close, stored on
+    today's row -- so an indicator built on prev_close cannot see the current day even by
+    accident. That is the whole look-ahead defence and it is structural, not a check.
+
+    One query for the run, extended backwards so the first day's window is full. The
+    arithmetic is a few thousand floats per indicator: measured in microseconds, so a
+    strategy gated on three averages costs the same as one gated on none.
+    """
+    if not specs:
+        return {}
+    import datetime as _dt
+    start = d_from - _dt.timedelta(days=_INDICATOR_WARMUP_DAYS)
+    rows = db.rows(
+        f"""SELECT d, prev_close FROM {db.DATABASE}.market_day
+            WHERE d >= %(a)s AND d <= %(b)s ORDER BY d""",
+        {"a": start.isoformat(), "b": d_to.isoformat()})
+    dates = [r["d"] for r in rows]
+    closes = [float(r["prev_close"]) for r in rows]
+    out = {d: {} for d in dates if d_from <= d <= d_to}
+    for name, spec in specs.items():
+        series = _indicator_series(spec, closes)
+        for d, v in zip(dates, series):
+            if d_from <= d <= d_to:
+                out[d][name] = v
+    return out
+
+
+def _sma(xs, n):
+    out, s = [None] * len(xs), 0.0
+    for i, x in enumerate(xs):
+        s += x
+        if i >= n:
+            s -= xs[i - n]
+        if i >= n - 1:
+            out[i] = s / n
+    return out
+
+
+def _ema(xs, n):
+    """Seeded with the first n-session SMA, then the standard 2/(n+1) recursion --
+    the same definition every charting package uses, so a value here matches the one on
+    the screen the author was looking at."""
+    out, k, val = [None] * len(xs), 2.0 / (n + 1), None
+    for i, x in enumerate(xs):
+        if i == n - 1:
+            val = sum(xs[:n]) / n
+        elif i >= n:
+            val = x * k + val * (1 - k)
+        out[i] = val
+    return out
+
+
+def _rsi(xs, n):
+    """Wilder's RSI: first average gain/loss is a plain mean over n changes, then the
+    (n-1)/n smoothing. Returns None until there are n changes to average."""
+    out = [None] * len(xs)
+    if len(xs) <= n:
+        return out
+    gains = [max(xs[i] - xs[i - 1], 0.0) for i in range(1, len(xs))]
+    losses = [max(xs[i - 1] - xs[i], 0.0) for i in range(1, len(xs))]
+    ag, al = sum(gains[:n]) / n, sum(losses[:n]) / n
+    out[n] = 100.0 if al == 0 else 100.0 - 100.0 / (1.0 + ag / al)
+    for i in range(n + 1, len(xs)):
+        ag = (ag * (n - 1) + gains[i - 1]) / n
+        al = (al * (n - 1) + losses[i - 1]) / n
+        out[i] = 100.0 if al == 0 else 100.0 - 100.0 / (1.0 + ag / al)
+    return out
+
+
+def _pct(a, b):
+    return None if a is None or b is None or not b else (a / b - 1.0) * 100.0
+
+
+def _indicator_series(spec, closes):
+    kind, n, m = spec["kind"], spec["n"], spec["m"]
+    if kind == "rsi":
+        return _rsi(closes, n)
+    if kind == "close_vs_sma":
+        return [_pct(c, s) for c, s in zip(closes, _sma(closes, n))]
+    if kind == "close_vs_ema":
+        return [_pct(c, e) for c, e in zip(closes, _ema(closes, n))]
+    if kind == "ema_cross":
+        return [_pct(f, s) for f, s in zip(_ema(closes, n), _ema(closes, m))]
+    if kind == "sma_cross":
+        return [_pct(f, s) for f, s in zip(_sma(closes, n), _sma(closes, m))]
+    raise ValueError(f"unknown indicator kind {kind!r}")

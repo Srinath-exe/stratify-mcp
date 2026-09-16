@@ -194,6 +194,10 @@ def dashboard(account, base_url, new_key=None, message=None, mcp_url=None):
           <div class="v">{usage["requests_used"]}<span class="mut" style="font-size:13px">
           / {usage["requests_limit"]}</span></div>
           <div class="bar"><i style="width:{req_pct:.0f}%"></i></div></div>
+        <div class="stat"><div class="k">Other calls</div>
+          <div class="v">{usage["metadata_requests_used"]}<span class="mut"
+          style="font-size:13px"> / {usage["metadata_requests_limit"]}</span></div>
+          <div class="sub" style="font-size:12px">coverage, methodology, history</div></div>
         <div class="stat"><div class="k">CPU seconds</div>
           <div class="v">{usage["cpu_seconds_used"]:.1f}<span class="mut"
           style="font-size:13px"> / {usage["cpu_seconds_limit"]:.0f}</span></div>

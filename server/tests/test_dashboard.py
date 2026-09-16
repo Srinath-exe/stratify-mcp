@@ -74,13 +74,28 @@ def test_dashboard_without_a_session_is_refused(client):
 
 
 def test_dashboard_shows_usage_after_a_backtest(client):
+    """The meter labelled "Backtests" must count backtests. It used to count every tool
+    call, so reading the coverage moved the number that tells a user how many runs they
+    have left."""
+    _, key = signup(client)
+    client.post("/mcp", headers={"Authorization": f"Bearer {key}"},
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                      "params": {"name": "run_backtest", "arguments": {"spec": {
+                          "structure": "iron_fly", "entry_time": "09:30",
+                          "params": {"pct_width": 1.5, "entry_dte": 4}}}}})
+    page = client.get("/dashboard").text
+    assert "Backtests" in page and "CPU seconds" in page
+    assert re.search(r'Backtests</div>\s*<div class="v">1<', page)
+
+
+def test_dashboard_does_not_count_a_metadata_call_as_a_backtest(client):
     _, key = signup(client)
     client.post("/mcp", headers={"Authorization": f"Bearer {key}"},
                 json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                       "params": {"name": "describe_coverage", "arguments": {}}})
     page = client.get("/dashboard").text
-    assert "Backtests" in page and "CPU seconds" in page
-    assert re.search(r'Backtests</div>\s*<div class="v">1<', page)
+    assert re.search(r'Backtests</div>\s*<div class="v">0<', page)
+    assert re.search(r'Other calls</div>\s*<div class="v">1<', page)
 
 
 def test_a_second_key_shares_one_account_quota(client):
@@ -94,7 +109,9 @@ def test_a_second_key_shares_one_account_quota(client):
                     json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                           "params": {"name": "describe_coverage", "arguments": {}}})
     q = r.json()["result"]["structuredContent"]["quota"]
-    assert q["requests_used"] == 2 and q["metered_on"] == "account"
+    # describe_coverage is metadata, so the SHARING is asserted on the counter it spends.
+    # The property under test is that two keys draw on one account, not which meter moves.
+    assert q["metadata_requests_used"] == 2 and q["metered_on"] == "account"
 
 
 def test_key_cap_is_enforced_from_the_dashboard(client):
@@ -111,7 +128,10 @@ def test_revoking_from_the_dashboard_kills_the_key(client):
     r = client.post("/mcp", headers={"Authorization": f"Bearer {key}"},
                     json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                           "params": {"name": "describe_coverage", "arguments": {}}})
-    assert r.json()["error"]["code"] == app_mod.UNAUTHENTICATED
+    # A revoked key is now refused at the transport layer with a 401 challenge rather
+    # than a JSON-RPC error, so a client can offer to reconnect instead of printing the
+    # refusal into the conversation as a tool result.
+    assert r.status_code == 401
 
 
 def test_one_account_cannot_revoke_anothers_key(client):

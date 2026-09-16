@@ -15,12 +15,27 @@ STRIKE_KEYS, the tier table -- rather than retyped into prose. Docs that are typ
 separately are wrong within a month; these cannot drift without a test failing.
 """
 import json
+import os
 import time
 
-from engine import strategy as strategy_mod
-from . import quota, store
+from engine import spec as spec_mod, strategy as strategy_mod
+from . import quota, rulecard, store
 
 MCP_PATH = "/mcp"
+
+
+def mcp_url(base_url):
+    """The endpoint a client should be pointed at.
+
+    NOT the web host with /mcp appended. Every page used to derive it that way, and the
+    web host does answer on /mcp -- so the wrong URL worked well enough to go unnoticed
+    while quietly breaking two things: OAuth discovery, whose protected-resource metadata
+    names the MCP host as the `resource` and rejects a mismatch; and the nginx zones, which
+    are tuned per host. The pinned public MCP URL is authoritative; the web host is the
+    fallback only for a deployment that has not set one.
+    """
+    pinned = os.getenv("STRATIFY_PUBLIC_MCP_URL", "").rstrip("/")
+    return pinned or (base_url.rstrip("/") + MCP_PATH)
 
 
 def _ago(ts):
@@ -94,11 +109,32 @@ PILLARS = [
              "downloadable through this API, and nothing you test is visible to anyone else."},
 ]
 
+# THE WHOLE PRODUCT IN THREE STEPS, written for somebody whose only prior software is a
+# chat box. Each step names the one thing they do and the one thing that happens. There
+# is no fourth step and no "advanced" branch: if it needs one, it belongs on /docs.
 STEPS = [
-    {"n": 1, "title": "Sign in with Google", "body": "No password, no waitlist, no card."},
-    {"n": 2, "title": "Generate a key", "body": "One click. It is shown once."},
-    {"n": 3, "title": "Paste it into your client",
-     "body": "Claude, or anything that speaks MCP. Then just describe a strategy."},
+    {"n": 1, "q": 0, "title": "Sign in with Google",
+     "body": "The same button you have pressed a hundred times. No password to invent, "
+             "no card, nothing to install."},
+    {"n": 2, "q": 1, "title": "Copy your key",
+     "body": "One click makes it. It is a long string that proves it's you — paste it "
+             "into the chat app you already use, once."},
+    {"n": 3, "q": 2, "title": "Describe a trade",
+     "body": "In plain words, to Claude or ChatGPT: “sell a NIFTY strangle every week, "
+             "1% out, but only when VIX is above 15.” The backtest comes back in "
+             "seconds, with a report you can send to anyone."},
+]
+
+# The three sentences a first-time visitor needs, in the order they will ask them.
+WHAT_IT_IS = [
+    ("What is it?", "A backtester for Indian index options that you talk to. It plugs "
+                    "into Claude, ChatGPT or Gemini as a tool, so you describe a "
+                    "strategy in a sentence and get a costed, honest result back."),
+    ("Do I need to code?", "No. If you can type a message, you can use it. The chat app "
+                    "does the talking; Stratify does the arithmetic on real one-minute "
+                    "prices."),
+    ("What does it cost?", "Nothing. A full year of NIFTY weekly options, a hundred "
+                    "backtests an hour, every feature. There is no trial that expires."),
 ]
 
 
@@ -117,6 +153,23 @@ def onetap(base_url, signed_in, next_path="/app"):
             "next": next_path}
 
 
+def login_view(base_url, next_path, google_ready=True, error=None):
+    """The sign-in chooser. Google is the door; the password form is the side entrance,
+    folded closed, for the few addresses the admin has issued one to."""
+    return {
+        "page": "login",
+        "google_ready": google_ready,
+        "next": next_path,
+        "error": error,
+        "title": "Sign in to Stratify",
+        "lede": "Most people sign in with Google. It is the only account we keep; "
+                "Stratify never sees your Google password.",
+        "password_note": "Only for addresses Stratify has issued a password to, such as "
+                         "a review account. There is no way to set one yourself, and no "
+                         "reset link: the person who issued it can issue it again.",
+    }
+
+
 def landing_view(base_url, signed_in, google_ready, error=None):
     free = quota.TIERS["free"]
     return {
@@ -126,12 +179,11 @@ def landing_view(base_url, signed_in, google_ready, error=None):
         "google_ready": google_ready,
         "error": error,
         "hero": {
-            "eyebrow": "NIFTY options, backtested properly",
-            "title": "Describe any options strategy in plain English. "
-                     "Get it backtested on real one-minute data.",
-            "lede": "Stratify is an MCP server. Connect it to Claude, describe the trade "
-                    "the way you would to a colleague, and get back a costed, "
-                    "slippage-adjusted, margin-aware result in seconds.",
+            "eyebrow": "NIFTY options · real one-minute data · free",
+            "title": "Describe an options strategy. Get it backtested.",
+            "lede": "Say it to Claude or ChatGPT the way you'd say it to a friend. "
+                    "Stratify runs it on a year of real prices, charges it what a broker "
+                    "would, and tells you honestly whether it held up.",
             "example": HERO_EXAMPLE,
             "cta": "Sign in with Google" if not signed_in else "Open your dashboard",
             "cta_href": "/auth/google?next=/app" if not signed_in else "/app",
@@ -139,14 +191,15 @@ def landing_view(base_url, signed_in, google_ready, error=None):
         },
         "pillars": PILLARS,
         "steps": STEPS,
+        "what": WHAT_IT_IS,
         "free_tier": {
             "window": "1 year of history",
-            "requests": f"{free.requests_per_hour} calls an hour",
+            "requests": f"{free.requests_per_hour} backtests an hour",
             "cpu": f"{free.cpu_seconds_per_hour:.0f} CPU-seconds an hour",
             "note": "Every strategy feature is available on every tier. The window of "
                     "history is the only thing a paid plan changes.",
         },
-        "mcp_url": base_url.rstrip("/") + MCP_PATH,
+        "mcp_url": mcp_url(base_url),
     }
 
 
@@ -167,8 +220,14 @@ def _usage(account):
     return {
         "tier": tier.name,
         "meters": [
-            {"key": "requests", "label": "Calls this hour",
+            # "Calls" was the honest label when every tool shared one counter. It no
+            # longer is: this counter now holds backtests and built reports only, and
+            # calling it "calls" would understate the allowance a user actually has.
+            {"key": "requests", "label": "Backtests this hour",
              "used": snap["requests_used"], "limit": snap["requests_limit"]},
+            {"key": "metadata", "label": "Other calls this hour",
+             "used": snap["metadata_requests_used"],
+             "limit": snap["metadata_requests_limit"]},
             {"key": "cpu", "label": "CPU-seconds this hour",
              "used": round(snap["cpu_seconds_used"], 1),
              "limit": snap["cpu_seconds_limit"]},
@@ -190,8 +249,8 @@ def overview_view(account, base_url, message=None):
         "usage": _usage(account),
         "has_key": bool(keys),
         "key_count": len(keys),
-        "mcp_url": base_url.rstrip("/") + MCP_PATH,
-        "connect": connect_snippets(base_url.rstrip("/") + MCP_PATH),
+        "mcp_url": mcp_url(base_url),
+        "connect": connect_snippets(mcp_url(base_url)),
         "recent_calls": [_call_row(c) for c in calls],
         "recent_reports": [_report_row(r, base_url) for r in results],
         "empty": not keys and not calls,
@@ -207,8 +266,17 @@ def keys_view(account, new_key=None, message=None):
                      "revoked": bool(k["revoked_at"]),
                      "revoked_at": _stamp(k["revoked_at"]) if k["revoked_at"] else None})
     live = [r for r in rows if not r["revoked"]]
+    # CONNECTED APPS BELONG NEXT TO KEYS, because they are the same thing to a user: a
+    # credential something else holds on their behalf. A grant nobody can see is a grant
+    # nobody can withdraw, which is the half of OAuth that usually goes missing.
+    connections = [{"client_id": c["client_id"],
+                    "name": c["client_name"] or c["client_id"],
+                    "uri": c["client_uri"],
+                    "last": _stamp(c["last_at"]), "last_ago": _ago(c["last_at"])}
+                   for c in store.oauth_connections(account["account_id"])]
     return {
         "page": "keys", "nav": NAV, "you": identity(account), "message": message,
+        "connections": connections,
         # Shown EXACTLY once, on the response that mints it. It is not stored in a
         # readable form anywhere, so there is no second chance and the page has to say so.
         "new_key": new_key,
@@ -261,11 +329,18 @@ def _report_row(r, base_url):
         spec = json.loads(get("spec_json") or "{}")
     except ValueError:
         pass
+    # The NAME comes from the same card the report itself opens with, so a row and the
+    # page it links to agree. "2 legs, weekly, 1 rule" described four different rows.
+    try:
+        card = rulecard.describe(spec)
+        name = None if card.get("error") else card["title"]
+    except Exception:                                              # noqa: BLE001
+        name = None
     return {
         "backtest_id": get("backtest_id"),
         "created": _stamp(get("created_at")),
         "ago": _ago(get("created_at")),
-        "name": spec.get("name") or _describe_spec(spec),
+        "name": spec.get("name") or name or _describe_spec(spec),
         "summary": _describe_spec(spec),
         "url": f"{base_url.rstrip('/')}/r/{get('report_token')}" if get("report_token") else None,
     }
@@ -286,7 +361,28 @@ def _describe_spec(spec):
         if entry.get("when"):
             bits.append("gated entry")
         return ", ".join(bits)
-    return ", ".join(str(spec.get(k)) for k in ("structure", "cadence") if spec.get(k)) or "—"
+    # Structure and cadence alone are NOT an identity: three weekly iron condors at
+    # different offsets all rendered as "iron_condor, weekly", so the reports page listed
+    # rows nobody could tell apart. Include the parameters that actually distinguish them.
+    bits = [str(spec["structure"])] if spec.get("structure") else []
+    pr = spec.get("params") or {}
+    if pr.get("pct_offset") is not None:
+        bits.append(f"{pr['pct_offset']}% out")
+    if pr.get("pct_width") is not None:
+        bits.append(f"{pr['pct_width']}% wide")
+    if pr.get("direction"):
+        bits.append(str(pr["direction"]))
+    if pr.get("entry_dte") is not None:
+        bits.append(f"{pr['entry_dte']} DTE")
+    if spec.get("entry_time"):
+        bits.append(str(spec["entry_time"]))
+    if spec.get("exit_time"):
+        bits.append(f"out {spec['exit_time']}")
+    if spec.get("cadence"):
+        bits.append(str(spec["cadence"]))
+    if spec.get("gate") and spec["gate"] != "always":
+        bits.append(f"gate: {spec['gate']}")
+    return ", ".join(bits) or "—"
 
 
 def reports_view(account, base_url, limit=50):
@@ -311,6 +407,43 @@ def connect_snippets(mcp_url):
          "body": json.dumps({"mcpServers": {"stratify": {
              "type": "http", "url": mcp_url,
              "headers": {"Authorization": "Bearer sk_live_..."}}}}, indent=2)},
+        # OpenCode, Gemini CLI and Codex all speak streamable HTTP with a caller-supplied
+        # header, which is exactly what this server authenticates with -- so they work
+        # today, with no OAuth and no shim. They are listed explicitly because a user who
+        # does not see their client named tends to assume it is unsupported.
+        {"key": "opencode", "label": "OpenCode",
+         "lang": "json",
+         "body": json.dumps({"$schema": "https://opencode.ai/config.json",
+                             "mcp": {"stratify": {
+                                 "type": "remote", "url": mcp_url, "enabled": True,
+                                 "headers": {
+                                     "Authorization": "Bearer {env:STRATIFY_API_KEY}"}}}},
+                            indent=2)},
+        {"key": "gemini-cli", "label": "Gemini CLI",
+         "lang": "json",
+         "body": json.dumps({"mcpServers": {"stratify": {
+             "httpUrl": mcp_url,
+             "headers": {"Authorization": "Bearer sk_live_..."},
+             "timeout": 120000}}}, indent=2)},
+        {"key": "codex", "label": "Codex",
+         "lang": "toml",
+         "body": ('[mcp_servers.stratify]\n'
+                  f'url = "{mcp_url}"\n'
+                  'http_headers = { Authorization = "Bearer sk_live_..." }\n')},
+        # THE BROWSER ASSISTANTS TAKE A URL AND NOTHING ELSE. ChatGPT, the Gemini web app
+        # and Claude's connector UI all refuse a bearer key and run OAuth instead, so the
+        # "config" for them is the URL plus a sign-in click. Listed here because a user
+        # looking for their client and finding only header snippets concludes it is
+        # unsupported.
+        {"key": "browser", "label": "ChatGPT · Gemini · Claude (web)",
+         "lang": "text",
+         "body": (f"{mcp_url}\n\n"
+                  "Paste that URL as a custom connector and sign in when prompted — no "
+                  "API key needed, and no key to leak.\n\n"
+                  "  ChatGPT   Settings > Apps > Advanced > Developer mode, then add it\n"
+                  "  Gemini    Settings & help > Connected Apps > custom app\n"
+                  "  Claude    Settings > Connectors > Add custom connector\n\n"
+                  "You can disconnect it again from your Stratify dashboard at any time.")},
         {"key": "curl", "label": "Anything else",
          "lang": "bash",
          "body": f"curl -s {mcp_url} \\\n"
@@ -382,6 +515,11 @@ def _field_rows():
     for title, names in groups:
         rows = [{"name": n, "doc": strategy_mod.FIELDS[n]}
                 for n in names if n in strategy_mod.FIELDS]
+        if title == "The market":
+            # The indicator family is parametric, so its documentation is a pattern
+            # rather than a fixed name. Listed with the market fields because that is
+            # what it is: a fact about the index, settled before the open.
+            rows += [{"name": n, "doc": d} for n, d in strategy_mod.INDICATOR_DOC.items()]
         seen.update(r["name"] for r in rows)
         out.append({"title": title, "rows": rows})
     # Anything added to FIELDS and not placed in a group above still gets documented --
@@ -394,11 +532,11 @@ def _field_rows():
 
 
 def docs_view(base_url, signed_in=False):
-    mcp_url = base_url.rstrip("/") + MCP_PATH
+    endpoint = mcp_url(base_url)
     return {
         "page": "docs", "nav": NAV, "signed_in": signed_in,
-        "mcp_url": mcp_url,
-        "connect": connect_snippets(mcp_url),
+        "mcp_url": endpoint,
+        "connect": connect_snippets(endpoint),
         "sections": [
             {"key": "start", "title": "Getting started"},
             {"key": "shape", "title": "How a strategy is written"},
@@ -488,6 +626,7 @@ def docs_view(base_url, signed_in=False):
         "tiers": [
             {"name": t.name,
              "requests": t.requests_per_hour, "cpu": t.cpu_seconds_per_hour,
+             "metadata": t.metadata_requests_per_hour,
              "concurrent": t.max_concurrent,
              "window": _tier_window(t.name)}
             for t in (quota.TIERS["free"], quota.TIERS["plus"], quota.TIERS["pro"])],
@@ -527,6 +666,71 @@ def _tier_window(name):
 
 LAST_UPDATED = "30 August 2026"
 
+# THE PUBLIC SUPPORT ADDRESS, in one place because it is published on three pages and a
+# directory listing, and an address that disagrees with itself across them is worse than
+# none. It is read from the environment rather than hard-coded because it cannot be
+# switched on until the domain can actually receive mail: aeon-labs.site has no MX record
+# today, so publishing an address there would bounce silently -- which on a privacy policy
+# is worse than saying "use the feedback tool", since a reader would believe they had
+# written to someone.
+#
+# TO TURN IT ON: add MX records for the domain, then set STRATIFY_SUPPORT_EMAIL in the
+# service environment. Every page below picks it up with no further change.
+SUPPORT_EMAIL = os.getenv("STRATIFY_SUPPORT_EMAIL", "").strip()
+
+
+
+def _contact_line(subject):
+    """Honest either way: it names an address when one exists, and does not invent a
+    'contact page' when one does not."""
+    if SUPPORT_EMAIL:
+        return (f"{subject} Write to {SUPPORT_EMAIL}, or use the feedback tool inside the "
+                f"product — it reaches the same place and carries the context of what you "
+                f"were doing.")
+    return (f"{subject} Use the feedback tool inside the product (the submit_feedback "
+            f"tool, or the feedback form in your dashboard). It is read directly by the "
+            f"people who build Stratify, and it carries the context of what you were "
+            f"doing, which an email cannot.")
+
+
+# A directory reviewer, and anyone reading the privacy policy, expects one page that says
+# how to reach a human. Serving it only when an address exists would leave a dead link in
+# the footer, so it is always served and simply describes whichever route is real.
+CONTACT = {
+    "title": "Contact",
+    "updated": LAST_UPDATED,
+    "intro": ("Stratify is built and run by a small team. There is no ticket queue and no "
+              "outsourced support desk — a message here reaches the people who wrote the "
+              "code."),
+    "sections": [
+        {"h": "The fastest route",
+         "items": [
+             "Use the `submit_feedback` tool from inside your MCP client, or the feedback "
+             "form in your dashboard. It automatically carries the backtest id, the spec "
+             "you ran and the error you saw, which is the context that makes a bug "
+             "fixable on the first reply rather than the third.",
+             "You can check what you have filed, and where it stands, with the "
+             "`my_feedback` tool.",
+         ]},
+        {"h": "Security",
+         "items": [
+             "If you have found a vulnerability, please report it through the feedback "
+             "tool and mark it as a security issue rather than posting it publicly. We "
+             "will acknowledge it and tell you when it is fixed.",
+             "Please do not run load or penetration tests against the live service. Ask "
+             "first and we will arrange it.",
+         ]},
+        {"h": "Account and data requests",
+         "items": [
+             "Deletion of your account and everything attached to it, or a copy of what "
+             "we hold about you: ask through the feedback tool and it will be done. See "
+             "the privacy page for what is held and for how long.",
+         ]},
+    ],
+    "contact": _contact_line("General questions."),
+}
+
+
 PRIVACY = {
     "title": "Privacy",
     "updated": LAST_UPDATED,
@@ -550,6 +754,10 @@ PRIVACY = {
              "A hash of each API key. Keys are hashed with scrypt and a server-side "
              "pepper before storage, so a key cannot be recovered from our database — "
              "including by us. That is why a key is shown once and never again.",
+             "If you connect an application — ChatGPT, Claude, Gemini or anything else "
+             "that signs in through OAuth — a hash of the tokens issued to it, the name "
+             "it registered under, and when it last connected. Hashed the same way as an "
+             "API key, and deleted when you disconnect it.",
              "Per-call metering: CPU-seconds and the number of option prices returned.",
              "A call log: which tool you called, the arguments you sent, whether it "
              "succeeded, and the reason if it was refused.",
@@ -588,6 +796,9 @@ PRIVACY = {
          ]},
         {"h": "Your control",
          "items": [
+             "Disconnect any connected application from your dashboard. Access ends "
+             "immediately, including any refresh token it holds — it cannot quietly mint "
+             "itself a new session afterwards.",
              "Revoke any API key at any time from your dashboard; it stops working "
              "immediately.",
              "Sign out to invalidate your browser session server-side, not just locally.",
@@ -603,8 +814,7 @@ PRIVACY = {
              "not readable by any script.",
          ]},
     ],
-    "contact": "Questions, corrections, or a deletion request: use the feedback tool "
-               "inside the product, or write to the address on the contact page.",
+    "contact": _contact_line("Questions, corrections, or a deletion request."),
 }
 
 TERMS = {
@@ -671,14 +881,216 @@ TERMS = {
              "export anything you want to keep.",
          ]},
     ],
-    "contact": "Questions about these terms: use the feedback tool inside the product, or "
-               "write to the address on the contact page.",
+    "contact": _contact_line("Questions about these terms."),
 }
 
 
 def legal_view(which, signed_in=False):
     """A static document. Kept in site.py with everything else the pages say, so a
     redesign of render.py cannot silently drop a clause."""
-    doc = {"privacy": PRIVACY, "terms": TERMS}[which]
+    doc = {"privacy": PRIVACY, "terms": TERMS, "contact": CONTACT}[which]
     return {"page": which, "nav": NAV, "signed_in": signed_in, "doc": doc,
             "other": ("terms", "Terms") if which == "privacy" else ("privacy", "Privacy")}
+
+
+# ---------------------------------------------------------------- OAuth consent
+
+def consent_view(account, ctx, params, offline=False):
+    """What the consent screen shows.
+
+    THE HARD PART IS NAMING WHO IS ASKING. A registered client supplies its own
+    client_name, and a CIMD client's document is entirely self-asserted -- either can claim
+    to be anything. So for CIMD the identity shown is the HOST of the client_id URL, which
+    is the one fact the client cannot lie about, and the name it gave itself is shown only
+    as a secondary label. A consent screen that presents a self-chosen name as though it
+    were verified is a phishing surface, not a security control.
+    """
+    client = ctx["client"]
+    grants = [
+        "Run backtests on your account, using your quota",
+        "Read the results and reports this account has produced",
+    ]
+    if offline:
+        grants.append("Stay connected without asking again, until you disconnect it")
+    return {
+        "page": "consent",
+        "you": identity(account),
+        "client_display": client.get("display") or client["client_id"],
+        "client_claimed_name": (client.get("client_name")
+                                if client.get("is_cimd") else None),
+        "verified": not client.get("is_cimd"),
+        "redirect_host": _host_of(ctx["redirect_uri"]),
+        "grants": grants,
+        "cannot": [
+            "It cannot see your API keys — those are hashed and are never readable, "
+            "including by us.",
+            "It cannot change your tier, your billing, or delete your account.",
+            "It cannot reach any market data directly. Results are computed here and only "
+            "results are returned.",
+        ],
+        "scope": ctx["scope"],
+        "offline": offline,
+        # Echoed straight back on the POST so the decision applies to the SAME request that
+        # was displayed. Re-deriving it from anything else would let the parameters change
+        # between what the user read and what they approved.
+        "fields": {k: v for k, v in params.items() if k != "decision"},
+    }
+
+
+def _host_of(url):
+    try:
+        from urllib.parse import urlparse
+        return urlparse(url).netloc or url
+    except Exception:                                              # noqa: BLE001
+        return url
+
+
+# ----------------------------------------------------------------------- explore
+#
+# What you can actually do. Every list here is drawn from the engine's own vocabulary --
+# STRIKE_KEYS, ACTIONS, MARKET_FIELDS, PORTFOLIO_KEYS -- so the page cannot advertise a
+# capability the parser would refuse. A test asserts that.
+
+EXPLORE = {
+    "title": "Everything you can do",
+    "lede": ("You describe a trade the way you would to a colleague. Stratify turns it "
+             "into a simulation over real one-minute option prices, charges it what a "
+             "broker would, and tells you honestly whether it held up."),
+    "groups": [
+        {"q": 0, "key": "describe", "title": "Describe any position",
+         "sub": "Not a menu of five presets. Any number of legs, any way of naming them.",
+         "items": [
+             ("Any legs", "Sell or buy, calls or puts, unequal quantities, one expiry or "
+                          "two. A single bought put or a six-leg double condor are the "
+                          "same sentence to the engine."),
+             ("Strikes named your way", "By percent from spot, by points, at the money, "
+                          "a fixed strike, by premium (“the call trading near ₹50”), "
+                          "by delta, or relative to another leg."),
+             ("Any entry", "Weekly on the day you choose before expiry, or daily on the "
+                          "nearest one. At the open, at 09:30, 11:00, 14:00 — or the close."),
+             ("Or the quick way", "Five common shapes — strangle, iron condor, iron fly, "
+                          "credit spread, long option — as one-line presets when you "
+                          "do not need the detail."),
+         ]},
+        {"q": 1, "key": "manage", "title": "Manage it while it is open",
+         "sub": "Rules that watch the position every minute and act on it.",
+         "items": [
+             ("Take profit and stop", "On the percent of credit kept, on points, on rupees, "
+                          "on the move in the index, on minutes held, at a clock time."),
+             ("Roll and repair", "Roll a tested leg further out. Close one side. Add a "
+                          "hedge. Close everything and re-open at new strikes. Up to a "
+                          "cap you set."),
+             ("Book-level rules", "Stand down after three losers. Stop for the month after "
+                          "a drawdown. Skip the next trade after a loss. Resume after a "
+                          "number of days."),
+             ("Trail", "Move the stop as the trade goes your way, on run-up from the "
+                          "trough or drawdown from the peak."),
+         ]},
+        {"q": 2, "key": "when", "title": "Say when to trade",
+         "sub": "Every condition is settled before the session opens — none can see the day's own close.",
+         "items": [
+             ("Volatility", "India VIX, its change, and 20-day realised volatility. "
+                          "“Only sell when VIX is above 15.”"),
+             ("Yesterday's move", "The previous day's move, the opening gap. "
+                          "“Only after a 1% down day.”"),
+             ("Calendar", "Day of the week, days to expiry. “Only Thursdays, "
+                          "only 0 to 2 days out.”"),
+             ("Indicators on the index", "RSI, simple and exponential averages, and "
+                          "crossovers — any window from 2 to 250 days, all computed on "
+                          "yesterday's close. “Only when RSI(14) is under 30”, “only "
+                          "while the 9 is over the 21”."),
+             ("Directional bias", "EMA trend, RSI momentum, MACD, Bollinger and Donchian "
+                          "breakouts, ATR, rate of change — pick a side, or stay "
+                          "neutral."),
+         ]},
+        {"q": 3, "key": "back", "title": "What comes back",
+         "sub": "Numbers a broker statement would agree with, and an honest reading of them.",
+         "items": [
+             ("Real costs", "Brokerage per leg, STT on the sell side, exchange and SEBI "
+                          "fees, GST, stamp duty. Slippage by moneyness. Margin from a "
+                          "SPAN calibration."),
+             ("The honesty panel", "A chronological 70/30 split, three walk-forward folds, "
+                          "a bootstrap interval, and a Sharpe deflated for how many "
+                          "variants you have already tried. No ratio below 30 trades."),
+             ("A report you can share", "One link: the rules, what it did to your capital "
+                          "with the sizing live in the page, a shaded calendar of every "
+                          "trade, the equity curve, and the evidence. Works on a phone."),
+             ("A replay", "Step through every entry and exit on the index, day by day, "
+                          "at the speed you choose."),
+         ]},
+    ],
+    "clients": [
+        ("Claude", "Desktop, web and Claude Code"),
+        ("ChatGPT", "Web, in developer mode"),
+        ("Gemini", "Web app and the CLI"),
+        ("Cursor · OpenCode · Codex", "Anything that speaks MCP"),
+    ],
+}
+
+
+def explore_view(base_url, signed_in=False):
+    return {"page": "explore", "signed_in": signed_in, "explore": EXPLORE,
+            "cta_href": "/app" if signed_in else "/auth/google?next=/app",
+            "cta": "Open your dashboard" if signed_in else "Start free with Google"}
+
+
+# ----------------------------------------------------------------------- pricing
+#
+# THE PREMIUM TIER HAS NO PRICE, and the page says so rather than inventing one. What it
+# has is a description and a list, and the only honest call to action for something that
+# does not exist yet is "tell me when it does".
+
+PREMIUM_PROMISE = [
+    ("Every index", "NIFTY, BANKNIFTY and SENSEX weeklies, not NIFTY alone."),
+    ("Every stock's options", "The full stock F&O universe, at the same one-minute "
+                              "resolution."),
+    ("Ten years, not one", "History back to 2016–2018 depending on the instrument, "
+                           "so a strategy meets 2020 and 2022 before your money does."),
+    ("No hourly ceiling", "Unlimited backtests. Run the grid."),
+    ("Everything the free tier has", "Same engine, same honesty panel, same reports. "
+                                     "Only the data changes."),
+]
+
+
+def pricing_view(base_url, account=None, message=None, joined=False):
+    free = quota.TIERS["free"]
+    win_from, win_to = spec_mod.window_for("free")
+    on_list = bool(account and store.on_waitlist(account_id=account["account_id"]))
+    return {
+        "page": "pricing",
+        "signed_in": account is not None,
+        "you": identity(account) if account else None,
+        "email": account["email"] if account else None,
+        "message": message,
+        "joined": joined,
+        "on_list": on_list or joined,
+        "free": {
+            "name": "Free",
+            "price": "₹0",
+            "sub": "No card. No trial clock. Free stays free.",
+            "items": [
+                f"NIFTY weekly options, one-minute prices",
+                f"{_span_words(win_from, win_to)} of history ({win_from} to {win_to})",
+                f"{free.requests_per_hour} backtests an hour, "
+                f"{free.metadata_requests_per_hour:,} other calls",
+                "Every strategy feature: any legs, any rules, every signal",
+                "The honesty panel, shareable reports, the replay",
+                "Works in Claude, ChatGPT, Gemini, Cursor and every MCP client",
+            ],
+            "cta": "Open your dashboard" if account else "Start free with Google",
+            "cta_href": "/app" if account else "/auth/google?next=/app",
+        },
+        "premium": {
+            "name": "Premium",
+            "price": "Not priced yet",
+            "sub": ("It is being built. There is no price, no date, and no card to enter "
+                    "— only a list to be on when it is ready."),
+            "items": PREMIUM_PROMISE,
+        },
+    }
+
+
+def _span_words(a, b):
+    days = (b - a).days
+    years = days / 365.25
+    return "1 year" if 0.9 <= years <= 1.1 else f"{years:.1f} years"

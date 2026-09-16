@@ -20,15 +20,28 @@ from . import signals
 # debit_spread is deliberately absent (decision A4): a live Fyers SPAN check confirmed a
 # margin-sizing bug in structures.py's implementation, which produced implausible
 # 200-900 % CAGR. It ships when that is fixed and re-verified, not before.
+# entry_days_before (added 2026-09-15): the entry day counted in TRADING SESSIONS before
+# expiry -- 0 is expiry day, 1 the session before, 2 the one before that -- as an
+# alternative to entry_dte, which is CALENDAR days. The research book's timetable is
+# written in sessions ("T-2"), and under a Tuesday expiry T-2 is Friday, calendar dte 4:
+# entry_dte 2 would pick Monday. The two are mutually exclusive.
 STRUCTURE_PARAMS = {
-    "short_strangle": {"required": {"pct_offset"}, "optional": {"sl_mult", "entry_dte"}},
+    "short_strangle": {"required": {"pct_offset"},
+                       "optional": {"sl_mult", "entry_dte", "entry_days_before"}},
     "credit_spread":  {"required": {"pct_offset", "pct_width"},
-                       "optional": {"sl_mult", "tp_pct", "entry_dte", "direction"}},
-    "iron_condor":    {"required": {"pct_offset", "pct_width"}, "optional": {"entry_dte"}},
-    "iron_fly":       {"required": {"pct_width"}, "optional": {"entry_dte"}},
+                       "optional": {"sl_mult", "tp_pct", "entry_dte", "entry_days_before",
+                                    "direction"}},
+    "iron_condor":    {"required": {"pct_offset", "pct_width"},
+                       "optional": {"entry_dte", "entry_days_before"}},
+    "iron_fly":       {"required": {"pct_width"}, "optional": {"entry_dte", "entry_days_before"}},
     "long_option":    {"required": {"pct_offset", "direction"},
-                       "optional": {"sl_pct", "tp_pct", "entry_dte"}},
+                       "optional": {"sl_pct", "tp_pct", "entry_dte", "entry_days_before"}},
 }
+# The vol overlay a spec may carry: "volNN" skips a cycle when the index's 20-day realised
+# volatility (annualised, %) is ABOVE NN at the entry minute. Same definition and same
+# function as production (signals.overlay_allows_entry), so a strategy published with
+# overlay="vol20" backtests here under exactly the filter it trades under.
+OVERLAY_RE = re.compile(r"^vol(\d{1,3})$")
 
 # Anti-oracle floors (decision D1), enforced before the router. A backtest over one
 # contract on one day returns that contract's price difference; repeated across the chain
@@ -103,6 +116,8 @@ class StrategySpec:
     # DAILY ONLY: skip sessions where the nearest expiry is further out than this. The way
     # to say "only trade 0-2 DTE" without dropping to one entry a week.
     max_dte: int = None
+    # "volNN" or None -- see OVERLAY_RE.
+    overlay: str = None
 
     @property
     def entry_minute(self):
@@ -120,6 +135,17 @@ class StrategySpec:
     @property
     def entry_dte(self):
         return int(self.params.get("entry_dte", 4))
+
+    @property
+    def entry_days_before(self):
+        """Sessions before expiry, or None when the entry day is set by entry_dte."""
+        v = self.params.get("entry_days_before")
+        return None if v is None else int(v)
+
+    @property
+    def overlay_cutoff(self):
+        m = OVERLAY_RE.match(self.overlay or "")
+        return float(m.group(1)) if m else None
 
     @property
     def is_credit(self):
@@ -146,7 +172,7 @@ def parse(raw, tier=None):
         raise SpecError("spec must be an object")
 
     unknown = set(raw) - {"structure", "symbol", "params", "entry_time", "period",
-                          "gate", "bias", "cadence", "exit_time", "max_dte"}
+                          "gate", "bias", "cadence", "exit_time", "max_dte", "overlay"}
     if unknown:
         raise SpecError(f"unknown top-level field(s): {', '.join(sorted(unknown))}")
 
@@ -210,11 +236,26 @@ def parse(raw, tier=None):
         if not 0 <= max_dte <= 45:
             raise SpecError("max_dte must be between 0 and 45")
 
-    if cadence == "daily" and "entry_dte" in params:
+    if cadence == "daily" and ("entry_dte" in params or "entry_days_before" in params):
         raise SpecError(
             "cadence 'daily' enters every session on whichever expiry is nearest, so "
-            "entry_dte -- which picks ONE day per expiry -- would contradict it. Use "
-            "max_dte to restrict how far from expiry a session may be")
+            "entry_dte / entry_days_before -- which pick ONE day per expiry -- would "
+            "contradict it. Use max_dte to restrict how far from expiry a session may be")
+    if "entry_dte" in params and "entry_days_before" in params:
+        raise SpecError(
+            "entry_dte (calendar days) and entry_days_before (trading sessions) both name "
+            "the entry day; set one")
+
+    overlay = raw.get("overlay")
+    if overlay in ("", "none"):
+        overlay = None
+    if overlay is not None:
+        m = OVERLAY_RE.match(str(overlay))
+        if not m or not 5 <= int(m.group(1)) <= 100:
+            raise SpecError(
+                f"overlay must be 'volNN' with NN between 5 and 100 (skip the cycle when "
+                f"20-day realised volatility is above NN%), got {overlay!r}")
+        overlay = f"vol{int(m.group(1))}"
 
     period = raw.get("period") or {}
     date_from = _as_date(period.get("from", win_from), "period.from")
@@ -234,7 +275,8 @@ def parse(raw, tier=None):
     spec = StrategySpec(structure=structure, symbol=symbol, params=params,
                         entry_time=entry_time, date_from=date_from, date_to=date_to,
                         gate=raw.get("gate", "always"), bias=raw.get("bias", "neutral"),
-                        cadence=cadence, exit_time=exit_time, max_dte=max_dte)
+                        cadence=cadence, exit_time=exit_time, max_dte=max_dte,
+                        overlay=overlay)
     _validate_values(spec)
     return spec
 
@@ -274,7 +316,8 @@ def _validate_values(spec):
     for key in STRUCTURE_PARAMS[spec.structure]["required"]:
         if p.get(key) is None:
             raise SpecError(f"{spec.structure} requires {key}; it was given as null")
-    for key in ("pct_offset", "pct_width", "sl_mult", "sl_pct", "tp_pct", "entry_dte"):
+    for key in ("pct_offset", "pct_width", "sl_mult", "sl_pct", "tp_pct", "entry_dte",
+                "entry_days_before"):
         if key in p and p[key] is not None:
             p_val = p[key]
             if isinstance(p_val, bool) or not _is_finite(p_val):
@@ -292,6 +335,8 @@ def _validate_values(spec):
         raise SpecError("sl_pct is a fraction of premium paid; it cannot exceed 1.0")
     if "entry_dte" in p and not (0 <= int(p["entry_dte"]) <= 45):
         raise SpecError("entry_dte must be between 0 and 45")
+    if "entry_days_before" in p and not (0 <= int(p["entry_days_before"]) <= 30):
+        raise SpecError("entry_days_before must be between 0 and 30 trading sessions")
     if spec.gate not in signals.gate_names():
         raise SpecError(f"unknown gate {spec.gate!r}. Available: "
                         f"{', '.join(signals.gate_names())}")
