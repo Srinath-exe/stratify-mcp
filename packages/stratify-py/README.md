@@ -1,3 +1,5 @@
+<p align="center"><img src="https://stratify.aeon-labs.site/static/icon-192.png" width="96" alt="Stratify"></p>
+
 # stratify-mcp
 
 Python client for [Stratify](https://stratify.aeon-labs.site) — real 1-minute NIFTY options data,

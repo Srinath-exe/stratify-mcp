@@ -1,3 +1,5 @@
+<p align="center"><img src="https://stratify.aeon-labs.site/static/icon-192.png" width="96" alt="Stratify"></p>
+
 # stratify (npm)
 
 JS/TS client, and `npx stratify-mcp` stdio bridge, for [Stratify](https://stratify.aeon-labs.site)

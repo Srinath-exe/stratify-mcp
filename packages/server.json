@@ -5,6 +5,29 @@
   "description": "Backtest NIFTY option strategies on real 1-minute data, with an honest out-of-sample panel.",
   "version": "0.1.2",
   "websiteUrl": "https://stratify.aeon-labs.site",
+  "icons": [
+    {
+      "src": "https://stratify.aeon-labs.site/static/icon-512.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "512x512"
+      ]
+    },
+    {
+      "src": "https://stratify.aeon-labs.site/static/icon-192.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "192x192"
+      ]
+    },
+    {
+      "src": "https://stratify.aeon-labs.site/static/icon-64.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "64x64"
+      ]
+    }
+  ],
   "remotes": [
     {
       "type": "streamable-http",
