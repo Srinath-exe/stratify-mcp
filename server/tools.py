@@ -222,7 +222,7 @@ TOOLS = [
         "name": "run_backtest",
         # Reads market data and returns a result. It stores that result under the caller's own account so the id and report link keep resolving, which is bookkeeping for the caller, not a change to anything the caller owns elsewhere.
         "annotations": {"title": 'Run a backtest', "readOnlyHint": True,
-                        "destructiveHint": False},
+                        "destructiveHint": False, "openWorldHint": False},
         "description": (
             "Backtest an Indian index option strategy on real 1-minute NIFTY options data. "
             "Returns P&L after real charges and slippage, return-on-margin, and an honesty "
@@ -263,7 +263,7 @@ TOOLS = [
         "name": "describe_coverage",
         # Pure metadata.
         "annotations": {"title": 'What the data covers', "readOnlyHint": True,
-                        "destructiveHint": False},
+                        "destructiveHint": False, "openWorldHint": False},
         "description": (
             "What data is available: symbols, date range, resolution, structures, gates, "
             "biases, the cost model, and every known gap. Call this before building a spec."),
@@ -273,7 +273,7 @@ TOOLS = [
         "name": "explain_methodology",
         # Pure documentation.
         "annotations": {"title": 'How a result is produced', "readOnlyHint": True,
-                        "destructiveHint": False},
+                        "destructiveHint": False, "openWorldHint": False},
         "description": (
             "How a result is produced and how to judge it: entry pricing, settlement, "
             "margin, slippage, the honesty rubric, and what each check can and cannot "
@@ -289,7 +289,7 @@ TOOLS = [
         "name": "get_backtest",
         # Reads back the caller's own result.
         "annotations": {"title": 'Retrieve a stored backtest', "readOnlyHint": True,
-                        "destructiveHint": False},
+                        "destructiveHint": False, "openWorldHint": False},
         "description": ("Retrieve a previous backtest result by its id — honesty panel, "
                         "equity curve and per-trade detail, exactly as first computed."),
         "inputSchema": {
@@ -309,7 +309,7 @@ TOOLS = [
         "name": "list_strategies",
         # Reads this account's shortlist.
         "annotations": {"title": 'List kept strategies', "readOnlyHint": True,
-                        "destructiveHint": False},
+                        "destructiveHint": False, "openWorldHint": False},
         "description": (
             "Strategies from THIS account's history that held up under out-of-sample and "
             "walk-forward checks, not merely ones that made money. Ranked by worst "
@@ -331,7 +331,7 @@ TOOLS = [
         "name": "search",
         # Read-only lookup.
         "annotations": {"title": 'Search what the service covers', "readOnlyHint": True,
-                        "destructiveHint": False},
+                        "destructiveHint": False, "openWorldHint": False},
         "description": ("Search what this service covers — symbols, dates, structures, "
                         "signals, methodology. Returns ids usable with fetch."),
         "inputSchema": {
@@ -343,7 +343,7 @@ TOOLS = [
         "name": "fetch",
         # Read-only lookup.
         "annotations": {"title": 'Fetch a document or result', "readOnlyHint": True,
-                        "destructiveHint": False},
+                        "destructiveHint": False, "openWorldHint": False},
         "description": "Fetch a document or backtest result by id, as returned by search.",
         "inputSchema": {
             "type": "object", "required": ["id"], "additionalProperties": False,
@@ -354,7 +354,7 @@ TOOLS = [
         "name": "submit_feedback",
         # WRITES: creates a feedback record. Not destructive — it adds a row and removes or overwrites nothing, so destructiveHint is false while readOnlyHint is false too.
         "annotations": {"title": 'File a report', "readOnlyHint": False,
-                        "destructiveHint": False},
+                        "destructiveHint": False, "openWorldHint": False},
         "description": (
             "Report a bug, request a feature, flag a data gap, or say what worked. Use "
             "this whenever the user expresses a problem with this service or wishes it "
@@ -383,7 +383,7 @@ TOOLS = [
         "name": "build_report",
         # WRITES: renders and stores a new report page at a new URL. Additive, so not destructive; it never replaces or deletes an existing report.
         "annotations": {"title": 'Build a shareable report', "readOnlyHint": False,
-                        "destructiveHint": False},
+                        "destructiveHint": False, "openWorldHint": False},
         "description": (
             "Turn a stored backtest into a finished, self-contained Stratify report — one "
             "HTML document with the honesty panel, equity and drawdown curves, "
@@ -438,7 +438,7 @@ TOOLS = [
         "name": "my_feedback",
         # Reads this account's own reports.
         "annotations": {"title": 'My filed reports', "readOnlyHint": True,
-                        "destructiveHint": False},
+                        "destructiveHint": False, "openWorldHint": False},
         "description": ("Reports this account has filed, and where each one stands. Use "
                         "it to answer 'did that bug I reported ever get fixed?'."),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},

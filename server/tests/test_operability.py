@@ -266,6 +266,9 @@ def test_every_tool_carries_a_title_and_a_safety_hint():
         assert ann.get("title"), f"{tool['name']} has no annotations.title"
         assert "readOnlyHint" in ann, f"{tool['name']} declares no readOnlyHint"
         assert "destructiveHint" in ann, f"{tool['name']} declares no destructiveHint"
+        # ChatGPT's portal refuses to scan a tool with any of the three hints unset. None
+        # of ours reaches outside this service, so the answer is false everywhere.
+        assert ann.get("openWorldHint") is False, f"{tool['name']} declares no openWorldHint"
         assert len(tool["name"]) <= 64, f"{tool['name']} exceeds the 64-character limit"
         assert tool.get("description"), f"{tool['name']} has no description"
 
