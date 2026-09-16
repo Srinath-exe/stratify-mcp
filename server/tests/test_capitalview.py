@@ -269,6 +269,12 @@ def test_a_preset_spec_reports_only_the_exits_the_engine_applies():
     card = rulecard.describe({"structure": "short_strangle", "cadence": "weekly",
                               "entry_time": "09:30",
                               "params": {"pct_offset": 4.0, "entry_dte": 1}})
+    if card.get("error") and "signals.py" in card["error"]:
+        # A preset spec parses through the signals module, an optional runtime input this
+        # repository does not ship. rulecard swallows the FileNotFoundError into the card
+        # by design (a report must render), so conftest cannot see it -- re-raise so the
+        # run says why this was not attempted instead of failing on an empty stop list.
+        raise FileNotFoundError(card["error"].split(": ", 1)[-1])
     assert card["stop"] == [], "short_strangle with no sl_mult has no stop"
     with_sl = rulecard.describe({"structure": "short_strangle", "cadence": "weekly",
                                  "entry_time": "09:30",
