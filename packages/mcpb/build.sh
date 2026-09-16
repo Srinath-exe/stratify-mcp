@@ -36,7 +36,8 @@ print(json.dumps({
     "deflated Sharpe that accounts for how many variants you already tried. Every "
     "backtest gets a shareable report page. Free tier: one year of NIFTY, 100 backtests "
     "an hour. Needs a key from https://stratify.aeon-labs.site (Google sign-in)."),
-  "author": {"name": "Aeon Labs", "url": "https://stratify.aeon-labs.site"},
+  "author": {"name": "Srinath H", "url": "https://github.com/Srinath-exe"},  # the directory wants the GitHub profile here
+  "repository": {"type": "git", "url": "https://github.com/Srinath-exe/stratify-mcp"},
   "homepage": "https://stratify.aeon-labs.site",
   "documentation": "https://stratify.aeon-labs.site/docs",
   "support": "https://stratify.aeon-labs.site/contact",
