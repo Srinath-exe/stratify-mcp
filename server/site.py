@@ -728,6 +728,19 @@ CONTACT = {
          ]},
     ],
     "contact": _contact_line("General questions."),
+    # The maintainer, by name. A service that asks for a Google identity and a trading
+    # idea owes the same in return: a person you can look up, and more than one way in.
+    "people": [
+        {"h": "The maintainer",
+         "lede": "Srinath H builds and runs Stratify.",
+         "links": [
+             ("Email", "mailto:1406srinath@gmail.com", "1406srinath@gmail.com"),
+             ("Phone", "tel:+919025723158", "+91 90257 23158"),
+             ("LinkedIn", "https://linkedin.com/in/srinath-exe", "linkedin.com/in/srinath-exe"),
+             ("GitHub", "https://github.com/Srinath-exe", "github.com/Srinath-exe"),
+             ("X", "https://x.com/Srinath_exe", "x.com/Srinath_exe"),
+         ]},
+    ],
 }
 
 

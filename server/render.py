@@ -215,6 +215,10 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;width:auto;heig
   text-transform:uppercase;color:var(--fg-subtle);margin:0 0 8px}
 .gbtn{background:#fff;color:#1f1f1f;border-color:#fff}
 .err{color:var(--brand-pink)}
+.reach{display:grid;grid-template-columns:max-content 1fr;gap:8px 18px;margin:12px 0 0;
+  font-variant-numeric:tabular-nums}
+.reach dt{color:var(--fg-muted);font-size:.9rem}
+.reach dd{margin:0}
 .pwd{margin-top:28px;border-top:1px solid var(--stroke);padding-top:16px}
 .pwd summary{cursor:pointer;color:var(--fg-muted);font-size:.95rem;list-style:none}
 .pwd summary::-webkit-details-marker{display:none}
@@ -837,11 +841,20 @@ def legal(v):
         + "".join(f'<li>{esc(i)}</li>' for i in s["items"]) + '</ul>'
         for s in d["sections"])
     other_key, other_label = v["other"]
+    external = 'rel="me noopener" target="_blank"'
+    people = "".join(
+        f'<h2>{esc(p["h"])}</h2><p>{esc(p["lede"])}</p><dl class="reach">'
+        + "".join(f'<dt>{esc(label)}</dt><dd><a href="{esc(href)}" '
+                  f'{external if href.startswith("http") else ""}>'
+                  f'{esc(text)}</a></dd>' for label, href, text in p["links"])
+        + "</dl>"
+        for p in d.get("people", []))
     return shell(f'{d["title"]} — Stratify', f"""
 <h1>{esc(d["title"])}</h1>
 <p class="muted small">Last updated {esc(d["updated"])}</p>
 <p>{esc(d["intro"])}</p>
 {body_sections}
+{people}
 <h2>Contact</h2>
 <p>{esc(d["contact"])}</p>
 <p class="small muted"><a href="/{esc(other_key)}">{esc(other_label)}</a> ·

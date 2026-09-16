@@ -190,3 +190,12 @@ def test_mark_is_served_in_every_directory_size(client):
     assert client.get("/static/app.py").status_code == 404
     home = client.get("/").text
     assert 'rel="icon" href="/favicon.ico"' in home and 'src="/static/icon-64.png"' in home
+
+
+def test_contact_page_names_the_maintainer_with_every_channel(client):
+    t = client.get("/contact").text
+    for needle in ("mailto:1406srinath@gmail.com", "tel:+919025723158",
+                   "https://linkedin.com/in/srinath-exe", "https://github.com/Srinath-exe",
+                   "https://x.com/Srinath_exe"):
+        assert needle in t, needle
+    assert 'rel="me noopener" target="_blank"' in t
