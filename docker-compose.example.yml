@@ -17,6 +17,14 @@ services:
     ports:
       - "127.0.0.1:8792:8792"
 
+    # The process runs as an unprivileged user (Dockerfile). These close what that alone
+    # leaves open: no privilege escalation via setuid, no Linux capabilities at all, and a
+    # ceiling on processes so a fork bomb cannot take the host.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
     environment:
       # Reached by container name over the private network below, so ClickHouse needs no
       # published port at all for this service to work.
@@ -78,6 +86,7 @@ services:
       resources:
         limits:
           memory: 2G
+          pids: 512
 
 networks:
   clickhouse:

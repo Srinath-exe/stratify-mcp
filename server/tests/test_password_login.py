@@ -186,3 +186,26 @@ def test_purge_drops_old_login_attempts():
     assert store.login_failures_since(0, email=EMAIL) == 2
     store.purge()
     assert store.login_failures_since(0, email=EMAIL) == 1
+
+
+# ------------------------------------------- pre-registration takeover via email signup
+
+def test_keys_minted_before_the_owner_verified_the_address_die_on_claim(client):
+    """The attack: sign up victim@example.com through the unverified email path, keep the
+    key; when the real owner signs in with Google and is linked to that account, the
+    attacker's key must stop working and the attacker's session must be dead."""
+    r = client.post("/v1/signup", json={"email": "victim@example.com"})
+    assert r.status_code in (200, 201), r.text
+    attacker_key = r.json()["api_key"]
+    account_id = r.json()["account_id"] if "account_id" in r.json() else store.authenticate(attacker_key)["account_id"]
+    old_session = store.session_token(account_id)
+    assert store.authenticate(attacker_key) is not None                  # works before claim
+
+    owner, created = store.account_for_google("sub-123", "victim@example.com", "Victim")
+    assert created is False and owner["account_id"] == account_id         # same account, linked
+    assert store.authenticate(attacker_key) is None                       # key revoked
+    assert store.account_by_session(old_session) is None                  # session rotated
+    assert store.active_key_count(account_id) == 0
+    # and the owner can mint a fresh one on the account they now own
+    _, fresh = store.issue_key(account_id)
+    assert store.authenticate(fresh)["account_id"] == account_id

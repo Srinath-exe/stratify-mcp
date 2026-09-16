@@ -38,14 +38,20 @@ token with no consenting human is exactly the credential that ends up in a publi
 """
 import base64
 import hashlib
+import http.client
+import ipaddress
 import json
+import logging
 import os
 import secrets
+import socket
+import ssl
 import time
 import urllib.parse
-import urllib.request
 
 from . import store
+
+log = logging.getLogger("stratify.oauth")
 
 # One functional scope. Fine-grained scopes on a service whose entire surface is "run
 # backtests for this account" would be consent-screen theatre: the user would be asked to
@@ -236,6 +242,80 @@ def register(body, ip_hash=None, now=None):
     return out
 
 
+def _public_address(host, port):
+    """Resolve `host` and return one address, or raise if ANY answer is not public.
+
+    THIS IS THE SSRF CONTROL. A CIMD client_id is a URL chosen by an unauthenticated
+    visitor, and the server fetches it. Without this, a name that resolves to the Docker
+    network, the host, a cloud metadata address or loopback would let a stranger make
+    this process issue HTTP requests inside the perimeter. Every resolved address is
+    checked -- not just the first -- because a hostile resolver can answer with a public
+    address first and a private one second and hope the client tries both.
+    """
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise OAuthError("invalid_client", "the client_id host does not resolve") from exc
+    addresses = []
+    for family, _, _, _, sockaddr in infos:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if (not ip.is_global or ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+            raise OAuthError("invalid_client",
+                             "the client_id host resolves to a non-public address")
+        addresses.append((family, sockaddr[0]))
+    if not addresses:
+        raise OAuthError("invalid_client", "the client_id host does not resolve")
+    return addresses[0]
+
+
+class _PinnedHTTPS(http.client.HTTPSConnection):
+    """Connects to the address that was checked, not to whatever the name resolves to a
+    moment later (DNS rebinding), while still presenting and verifying the hostname."""
+
+    def __init__(self, host, ip, port, timeout, context):
+        super().__init__(host, port, timeout=timeout, context=context)
+        self._pinned_ip = ip
+
+    def connect(self):
+        sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+def _public_https_get(parsed):
+    """GET a URL an outsider chose, safely: public address only, pinned connection,
+    certificate verified against the name, no redirects followed, bounded size and time.
+    Failures are reported to the caller in one generic sentence and logged in full here,
+    so the response cannot be used as a port-scan oracle."""
+    host, port = parsed.hostname, parsed.port or 443
+    _, ip = _public_address(host, port)
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+    conn = _PinnedHTTPS(host, ip, port, CIMD_TIMEOUT, ssl.create_default_context())
+    try:
+        conn.request("GET", path, headers={"Accept": "application/json",
+                                           "User-Agent": "stratify-mcp-oauth/1"})
+        resp = conn.getresponse()
+        if resp.status != 200:
+            # A 3xx is refused rather than followed: a redirect is exactly how a public
+            # page would point this fetch at an internal address.
+            raise OAuthError("invalid_client",
+                             "the client_id document could not be fetched")
+        raw = resp.read(CIMD_MAX_BYTES + 1)
+    except OAuthError:
+        raise
+    except Exception as exc:                                       # noqa: BLE001
+        log.info("CIMD fetch of %s failed: %s: %s", parsed.geturl(), type(exc).__name__, exc)
+        raise OAuthError("invalid_client",
+                         "the client_id document could not be fetched") from exc
+    finally:
+        conn.close()
+    if len(raw) > CIMD_MAX_BYTES:
+        raise OAuthError("invalid_client", "the client_id document is too large")
+    return raw
+
+
 def _fetch_cimd(client_id):
     """Resolve a Client ID Metadata Document.
 
@@ -248,15 +328,7 @@ def _fetch_cimd(client_id):
     parsed = urllib.parse.urlparse(client_id)
     if parsed.scheme != "https" or not parsed.hostname:
         raise OAuthError("invalid_client", "a CIMD client_id must be an https URL")
-    req = urllib.request.Request(client_id, headers={"Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=CIMD_TIMEOUT) as r:
-            raw = r.read(CIMD_MAX_BYTES + 1)
-    except Exception as exc:                                       # noqa: BLE001
-        raise OAuthError("invalid_client",
-                         f"could not fetch the client_id document: {exc}") from exc
-    if len(raw) > CIMD_MAX_BYTES:
-        raise OAuthError("invalid_client", "the client_id document is too large")
+    raw = _public_https_get(parsed)
     try:
         doc = json.loads(raw)
     except ValueError as exc:

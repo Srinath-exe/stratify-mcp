@@ -362,10 +362,21 @@ def account_for_google(sub, email, name=None, picture=None, tier="free"):
                 created = True
             else:
                 account_id = row["account_id"]
+                now = time.time()
                 con.execute(
                     "UPDATE accounts SET google_sub=?, display_name=?, avatar_url=?, "
-                    "email=?, last_seen_at=? WHERE account_id=?",
-                    (sub, name, picture, email, time.time(), account_id))
+                    "email=?, last_seen_at=?, session_token=? WHERE account_id=?",
+                    (sub, name, picture, email, now, secrets.token_urlsafe(32), account_id))
+                # EVERYTHING MINTED BEFORE THE OWNER PROVED THE ADDRESS IS REVOKED. The
+                # email-only signup never verified anything, so anyone could have created
+                # this account first and be holding its key. Linking the verified owner to
+                # it while leaving that key alive would hand the newcomer the owner's
+                # history and quota. The owner keeps the account and its results; keys,
+                # OAuth grants and the session start from zero and are re-issued by them.
+                con.execute("UPDATE api_keys SET revoked_at=? WHERE account_id=? "
+                            "AND revoked_at IS NULL", (now, account_id))
+                con.execute("UPDATE oauth_tokens SET revoked_at=? WHERE account_id=? "
+                            "AND revoked_at IS NULL", (now, account_id))
             if not con.execute("SELECT session_token FROM accounts WHERE account_id=?",
                                (account_id,)).fetchone()["session_token"]:
                 con.execute("UPDATE accounts SET session_token=? WHERE account_id=?",

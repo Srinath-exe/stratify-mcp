@@ -388,3 +388,102 @@ def test_tokens_are_never_stored_in_a_readable_form(client, signed_in):
     raw = Path(store.DB_PATH).read_bytes()
     for secret in (tok["access_token"], tok["refresh_token"]):
         assert secret.encode() not in raw, "a live token is sitting in the database"
+
+
+# ---------------------------------------------------------------- SSRF via CIMD
+
+def _cimd_params(client_id):
+    _, challenge = pkce()
+    return authorize_params(client_id, challenge, redirect_uri=client_id.rsplit("/", 1)[0] + "/cb")
+
+
+def test_a_client_id_that_resolves_to_a_private_address_is_never_fetched(client, signed_in, monkeypatch):
+    """The attack: a public hostname whose A record is 10.0.2.3 (ClickHouse on the Docker
+    network) or 169.254.169.254. The server must refuse before opening a socket."""
+    monkeypatch.setattr(mcpauth.socket, "getaddrinfo",
+                        lambda *a, **k: [(mcpauth.socket.AF_INET, 1, 6, "", ("10.0.2.3", 443))])
+    opened = []
+    monkeypatch.setattr(mcpauth.socket, "create_connection",
+                        lambda *a, **k: opened.append(a) or (_ for _ in ()).throw(AssertionError("socket opened")))
+    r = client.get("/oauth/authorize", params=_cimd_params("https://evil.example/client.json"),
+                   follow_redirects=False)
+    assert r.status_code == 400 and "non-public address" in r.text
+    assert opened == []
+
+
+def test_a_second_private_answer_behind_a_public_one_is_still_refused(client, signed_in, monkeypatch):
+    """Hostile resolvers answer [public, private] and hope the client falls through."""
+    monkeypatch.setattr(mcpauth.socket, "getaddrinfo", lambda *a, **k: [
+        (mcpauth.socket.AF_INET, 1, 6, "", ("93.184.216.34", 443)),
+        (mcpauth.socket.AF_INET, 1, 6, "", ("127.0.0.1", 443))])
+    r = client.get("/oauth/authorize", params=_cimd_params("https://evil.example/client.json"),
+                   follow_redirects=False)
+    assert r.status_code == 400 and "non-public address" in r.text
+
+
+def test_redirects_from_a_client_id_document_are_refused_not_followed(client, signed_in, monkeypatch):
+    """A 302 is how a public page would steer this fetch at an internal address. The
+    connection is pinned to the checked IP and any non-200 is refused."""
+    monkeypatch.setattr(mcpauth, "_public_address", lambda host, port: (2, "93.184.216.34"))
+
+    class Resp:
+        status = 302
+        def read(self, n=-1): return b""
+    class Conn:
+        def __init__(self, *a, **k): pass
+        def request(self, *a, **k): pass
+        def getresponse(self): return Resp()
+        def close(self): pass
+    monkeypatch.setattr(mcpauth, "_PinnedHTTPS", Conn)
+    r = client.get("/oauth/authorize", params=_cimd_params("https://evil.example/client.json"),
+                   follow_redirects=False)
+    assert r.status_code == 400 and "could not be fetched" in r.text
+
+
+def test_fetch_failures_do_not_echo_the_error_so_the_page_is_not_a_port_scan_oracle(client, signed_in, monkeypatch):
+    monkeypatch.setattr(mcpauth, "_public_address", lambda host, port: (2, "93.184.216.34"))
+
+    class Conn:
+        def __init__(self, *a, **k): pass
+        def request(self, *a, **k): raise ConnectionRefusedError("[Errno 111] Connection refused")
+        def getresponse(self): pass
+        def close(self): pass
+    monkeypatch.setattr(mcpauth, "_PinnedHTTPS", Conn)
+    r = client.get("/oauth/authorize", params=_cimd_params("https://evil.example/client.json"),
+                   follow_redirects=False)
+    assert r.status_code == 400
+    assert "refused" not in r.text and "Errno" not in r.text
+    assert "could not be fetched" in r.text
+
+
+def test_the_pinned_connection_connects_to_the_checked_ip_with_the_hostname_for_tls(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(mcpauth.socket, "create_connection",
+                        lambda addr, timeout: seen.setdefault("addr", addr) or object())
+    ctx = mcpauth.ssl.create_default_context()
+    monkeypatch.setattr(ctx, "wrap_socket",
+                        lambda sock, server_hostname=None: seen.setdefault("sni", server_hostname) or sock)
+    c = mcpauth._PinnedHTTPS("client.example", "93.184.216.34", 443, 5, ctx)
+    c.connect()
+    assert seen["addr"] == ("93.184.216.34", 443) and seen["sni"] == "client.example"
+
+
+def test_a_real_public_document_still_works_end_to_end(client, signed_in, monkeypatch):
+    """The control must not break the legitimate path: a self-referential document on a
+    public address with same-origin redirect_uris resolves to a client."""
+    monkeypatch.setattr(mcpauth, "_public_address", lambda host, port: (2, "93.184.216.34"))
+    doc = json.dumps({"client_id": "https://chatgpt.example/client.json",
+                      "redirect_uris": ["https://chatgpt.example/cb"],
+                      "client_name": "ChatGPT"}).encode()
+
+    class Resp:
+        status = 200
+        def read(self, n=-1): return doc
+    class Conn:
+        def __init__(self, *a, **k): pass
+        def request(self, *a, **k): pass
+        def getresponse(self): return Resp()
+        def close(self): pass
+    monkeypatch.setattr(mcpauth, "_PinnedHTTPS", Conn)
+    r = client.get("/oauth/authorize", params=_cimd_params("https://chatgpt.example/client.json"))
+    assert r.status_code == 200 and "chatgpt.example" in r.text
