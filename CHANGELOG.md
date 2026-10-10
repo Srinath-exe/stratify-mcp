@@ -34,6 +34,19 @@ point at the methodology version.
   OAuth discovery. `STRATIFY_PUBLIC_MCP_URL` is authoritative.
 - Reports older than 30 days are purged; a purged link answers 410 with a page.
 
+## [0.1.3] — 2026-10-10
+
+### Changed
+- npm `description` carries an mcprush.com package-ownership claim token. The directory
+  proves a listing is ours by reading npm's own packument for a string only a publisher
+  could put there -- the same idea as the registry's apex DNS TXT record, and it reads
+  nothing but public metadata. It stays until mcprush emails a decision; the next release
+  drops it. npm version descriptions are immutable, so removing it means publishing over
+  it, never editing 0.1.3.
+
+The Python client stays at 0.1.2 on purpose: nothing in it changed, and the claim is
+npm-only, so the usual lockstep is broken for this release alone.
+
 ## [0.1.2] — 2026-09-15
 
 ### Added

@@ -1,8 +1,8 @@
 {
   "name": "stratify-mcp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "mcpName": "site.aeon-labs/stratify",
-  "description": "JS/TS client and stdio-to-HTTP bridge for the Stratify options-backtesting MCP server",
+  "description": "JS/TS client and stdio-to-HTTP bridge for the Stratify options-backtesting MCP server. mcprush.com-claim-stratify-mcp-5ced1f687ff78b361cfea138",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Srinath-exe/stratify-mcp.git",
