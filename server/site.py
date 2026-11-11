@@ -133,7 +133,7 @@ WHAT_IT_IS = [
     ("Do I need to code?", "No. If you can type a message, you can use it. The chat app "
                     "does the talking; Stratify does the arithmetic on real one-minute "
                     "prices."),
-    ("What does it cost?", "Nothing. A full year of NIFTY weekly options, a hundred "
+    ("What does it cost?", "Nothing. A full year of NIFTY and SENSEX weekly options, a hundred "
                     "backtests an hour, every feature. There is no trial that expires."),
 ]
 
@@ -179,7 +179,7 @@ def landing_view(base_url, signed_in, google_ready, error=None):
         "google_ready": google_ready,
         "error": error,
         "hero": {
-            "eyebrow": "NIFTY options · real one-minute data · free",
+            "eyebrow": "NIFTY and SENSEX options · real one-minute data · free",
             "title": "Describe an options strategy. Get it backtested.",
             "lede": "Say it to Claude or ChatGPT the way you'd say it to a friend. "
                     "Stratify runs it on a year of real prices, charges it what a broker "
@@ -250,14 +250,14 @@ def overview_view(account, base_url, message=None):
         "has_key": bool(keys),
         "key_count": len(keys),
         "mcp_url": mcp_url(base_url),
-        "connect": connect_snippets(mcp_url(base_url)),
+        "connect": setup_clients(base_url, mcp_url(base_url)),
         "recent_calls": [_call_row(c) for c in calls],
         "recent_reports": [_report_row(r, base_url) for r in results],
         "empty": not keys and not calls,
     }
 
 
-def keys_view(account, new_key=None, message=None):
+def keys_view(account, new_key=None, message=None, base_url=None):
     rows = []
     for k in store.list_keys(account["account_id"]):
         rows.append({"key_id": k["key_id"], "last4": k["last4"],
@@ -280,6 +280,8 @@ def keys_view(account, new_key=None, message=None):
         # Shown EXACTLY once, on the response that mints it. It is not stored in a
         # readable form anywhere, so there is no second chance and the page has to say so.
         "new_key": new_key,
+        "setup": setup_clients(base_url, mcp_url(base_url), new_key)
+                 if (new_key and base_url) else None,
         "keys": rows,
         "live_count": len(live),
         "limit": quota.MAX_ACTIVE_KEYS if hasattr(quota, "MAX_ACTIVE_KEYS") else None,
@@ -453,6 +455,152 @@ def connect_snippets(mcp_url):
     ]
 
 
+KEY_PLACEHOLDER = "sk_live_YOUR_KEY"
+
+
+def setup_clients(base_url, mcp, key=None):
+    """One way in per client, each a single thing to paste, with the key already filled in.
+
+    THIS IS THE ONE SOURCE OF SETUP TRUTH. The docs, the dashboard, the key page and
+    /llms.txt all render from it, and the landing page mirrors it in story.js. The
+    Claude Code and Gemini CLI lines were run verbatim before they were published here
+    (10 Nov 2026); change one only after running the new form.
+    """
+    k = key or KEY_PLACEHOLDER
+    base = base_url.rstrip("/")
+    return [
+        {"key": "agent", "label": "Any AI agent", "lang": "text",
+         "where": "Paste this into the agent or chatbot that should do the setup.",
+         "body": f"Set up the Stratify MCP server for me. Instructions: {base}/llms.txt\n"
+                 f"My Stratify API key: {k}"},
+        {"key": "claude-code", "label": "Claude Code", "lang": "bash",
+         "where": "Run once in a terminal. Available in every project afterwards.",
+         "body": f'claude mcp add -s user --transport http stratify {mcp} '
+                 f'--header "Authorization: Bearer {k}"'},
+        {"key": "codex", "label": "Codex", "lang": "toml",
+         "where": "Add to ~/.codex/config.toml.",
+         "body": f'[mcp_servers.stratify]\nurl = "{mcp}"\n'
+                 f'http_headers = {{ Authorization = "Bearer {k}" }}'},
+        {"key": "cursor", "label": "Cursor", "lang": "json",
+         "where": "Add to ~/.cursor/mcp.json. If the file already has an mcpServers block, "
+                  "add the stratify entry inside it rather than replacing the file.",
+         "body": json.dumps({"mcpServers": {"stratify": {
+             "url": mcp, "headers": {"Authorization": f"Bearer {k}"}}}}, indent=2)},
+        {"key": "vscode", "label": "VS Code", "lang": "bash",
+         "where": "Run once in a terminal.",
+         "body": "code --add-mcp '" + json.dumps(
+             {"name": "stratify", "type": "http", "url": mcp,
+              "headers": {"Authorization": f"Bearer {k}"}}, separators=(",", ":")) + "'"},
+        {"key": "gemini-cli", "label": "Gemini CLI", "lang": "bash",
+         "where": "Run once in a terminal.",
+         "body": f'gemini mcp add -s user -t http stratify {mcp} '
+                 f'-H "Authorization: Bearer {k}"'},
+        {"key": "claude-desktop", "label": "Claude Desktop", "lang": "json",
+         "where": "Add to claude_desktop_config.json, or use Settings > Connectors with "
+                  "the URL below and sign in instead.",
+         "body": json.dumps({"mcpServers": {"stratify": {
+             "command": "npx", "args": ["-y", "stratify-mcp"],
+             "env": {"STRATIFY_API_KEY": k}}}}, indent=2)},
+        {"key": "web", "label": "ChatGPT · Claude.ai", "lang": "text",
+         "where": "No key needed: add the URL as a custom connector and sign in when asked.",
+         "body": mcp},
+    ]
+
+
+def _tool_summaries():
+    from . import tools
+    out = []
+    for t in tools.TOOLS:
+        d = " ".join(t.get("description", "").split())
+        first = d.split(". ")[0].rstrip(".") + "."
+        title = (t.get("annotations") or {}).get("title") or t["name"]
+        out.append({"name": t["name"], "title": title, "doc": first})
+    return out
+
+
+def agent_markdown(base_url, mcp):
+    """/llms.txt: everything an AI agent needs to connect a person to Stratify, from the
+    link alone. Written for a model reading it cold, so it says what to do in order and
+    what each failure means."""
+    base = base_url.rstrip("/")
+    free = quota.TIERS["free"]
+    f0, f1 = spec_mod.window_for("free")
+    free_win = f"{f0:%d %b %Y} to {f1:%d %b %Y}"
+    rows = "\n".join(f"- `{t['name']}`: {t['doc']}" for t in _tool_summaries())
+    blocks = "\n\n".join(
+        f"### {c['label']}\n{c['where']}\n\n```{c['lang']}\n{c['body']}\n```"
+        for c in setup_clients(base, mcp) if c["key"] != "agent")
+    return f"""# Stratify
+
+> Backtest NIFTY and SENSEX option strategies on 372 million real one-minute option bars,
+> from any MCP client. You describe a strategy in plain words; the server runs it with
+> real charges and slippage and returns P&L, risk, an honesty panel and a report link.
+
+- MCP endpoint (Streamable HTTP): {mcp}
+- Website: {base}
+- Human docs: {base}/docs
+- Auth: an API key sent as `Authorization: Bearer sk_live_...`, OR OAuth 2.1 (ChatGPT,
+  Claude.ai and Claude Desktop connectors sign in instead of using a key).
+- Free tier: one year of NIFTY and SENSEX history ({free_win}), {free.requests_per_hour}
+  backtests an hour. Every strategy feature is on every tier; paid tiers only lengthen the history.
+
+## Set up Stratify for a person (instructions for AI agents)
+
+1. **Get an API key.** If the person gave you one (it starts with `sk_live_`), use it.
+   If not, either:
+   - send them to {base} and ask them to click **Continue with Google**; the key and a
+     ready-made setup line appear on that page, or
+   - with their permission, create an account for their email address:
+     ```bash
+     curl -s {base}/v1/signup -H 'Content-Type: application/json' \\
+       -d '{{"email":"them@example.com"}}'
+     ```
+     The response's `api_key` is shown once; store it in their client config, nowhere
+     else. A 409 means the address already has an account: ask them for their key or to
+     sign in at {base}.
+   - ChatGPT, Claude.ai and Claude Desktop connectors need no key at all: add the MCP
+     endpoint URL as a custom connector and the person signs in when prompted.
+2. **Add the server to their client** with the matching block below, key filled in.
+3. **Verify the key** with one cheap call (it does not spend a backtest):
+   ```bash
+   curl -s {mcp} -H 'Authorization: Bearer sk_live_...' \\
+     -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \\
+     -d '{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"describe_coverage","arguments":{{}}}}}}'
+   ```
+   HTTP 200 with a `result` means it works. 401 means the key is wrong or revoked; 429
+   means the hourly allowance is spent. Most clients need a restart to load a new server.
+
+   **Do not treat "connected · 11 tools" in a client as proof.** Listing tools needs no
+   key, so a client shows the server as connected even with a wrong or missing key; only
+   a tool call checks it. Run the call above, or ask the client "What data does Stratify
+   cover?" and confirm it answers.
+4. **First request to suggest:** "Backtest selling a NIFTY strangle 0.5% either side of
+   spot at 09:20 every trading day, exit at 15:15. Did it make money?"
+
+## Client configuration
+
+{blocks}
+
+## Tools
+
+{rows}
+
+Call `describe_coverage` first if unsure what dates or symbols exist; it does not spend a
+backtest. Strategy specs are JSON (legs, entry, rules, exit, portfolio); `explain_methodology`
+and {base}/docs document every field.
+
+## Facts worth knowing
+
+- Data: real 1-minute option prints. NIFTY from January 2019, SENSEX from August 2023
+  (Premium); the free tier serves {free_win} for both.
+- The open form (legs + rules) runs on NIFTY; SENSEX runs through the preset form
+  (`structure` + `params`), which `describe_coverage` lists.
+- Results are historical simulations, not investment advice.
+- Option price series are never downloadable; the server returns results, not data.
+- Support: {base}/contact
+"""
+
+
 # Worked examples. Each one is a spec the engine accepts -- a test runs every one of them
 # through the parser, so a doc page cannot show a strategy that would be refused.
 EXAMPLES = [
@@ -475,7 +623,7 @@ EXAMPLES = [
      "spec": {"legs": [{"side": "sell", "type": "CE", "strike": {"pct_offset": 1.2}},
                        {"side": "sell", "type": "PE", "strike": {"pct_offset": -1.2}}],
               "entry": {"cadence": "weekly", "dte": 4, "time": "09:20"},
-              "rules": [{"when": {"pnl_pct_of_credit": {"gte": 0.6}}, "then": "close"},
+              "rules": [{"when": {"pnl_frac_of_credit": {"gte": 0.6}}, "then": "close"},
                         {"when": {"leg_mark_mult": {"gte": 2.0, "leg": 0}},
                          "then": {"roll": {"legs": [0], "to": {"pct_offset": 2.0}}},
                          "max_times": 2}],
@@ -487,8 +635,8 @@ EXAMPLES = [
      "spec": {"legs": [{"side": "sell", "type": "CE", "strike": "atm"},
                        {"side": "sell", "type": "PE", "strike": "atm"}],
               "entry": {"cadence": "daily", "max_dte": 0, "time": "09:16"},
-              "rules": [{"when": {"pnl_pct_of_credit": {"gte": 0.25}}, "then": "close"},
-                        {"when": {"pnl_pct_of_credit": {"lte": -0.6}}, "then": "close"}],
+              "rules": [{"when": {"pnl_frac_of_credit": {"gte": 0.25}}, "then": "close"},
+                        {"when": {"pnl_frac_of_credit": {"lte": -0.6}}, "then": "close"}],
               "exit": {"time": "15:10"}}},
     {"key": "calendar", "title": "Two expiries at once",
      "ask": "Sell this week's at-the-money call and buy next week's against it.",
@@ -503,8 +651,8 @@ def _field_rows():
     """The rule vocabulary, straight out of the protocol. Grouped the way a person thinks
     about it rather than the way the dict is ordered."""
     groups = [
-        ("The position", ["pnl_pts", "pnl_rupees", "pnl_pct_of_credit", "pnl_pct_of_max",
-                          "combined_premium", "credit_kept_pct"]),
+        ("The position", ["pnl_pts", "pnl_rupees", "pnl_frac_of_credit", "pnl_frac_of_max",
+                          "combined_premium", "credit_kept_frac"]),
         ("A single leg", sorted(strategy_mod.LEG_FIELDS)),
         ("The market", sorted(strategy_mod.MARKET_FIELDS)),
         ("The underlying", ["spot", "spot_move_pct", "spot_move_pts"]),
@@ -536,7 +684,8 @@ def docs_view(base_url, signed_in=False):
     return {
         "page": "docs", "nav": NAV, "signed_in": signed_in,
         "mcp_url": endpoint,
-        "connect": connect_snippets(endpoint),
+        "connect": setup_clients(base_url, endpoint),
+        "tools": _tool_summaries(),
         "sections": [
             {"key": "start", "title": "Getting started"},
             {"key": "shape", "title": "How a strategy is written"},
@@ -1053,15 +1202,21 @@ def explore_view(base_url, signed_in=False):
 # has is a description and a list, and the only honest call to action for something that
 # does not exist yet is "tell me when it does".
 
+# EVERY LINE HERE DESCRIBES DATA THAT IS BUILT AND SERVING. The previous version
+# promised BANKNIFTY, the whole stock F&O universe, and history back to 2016-2018. None of
+# the three existed, and the dates were the worst of it: a reader could have sized a
+# position against ten years of history that was never there. A roadmap belongs under a
+# heading that says roadmap, not in the list a price is read against.
 PREMIUM_PROMISE = [
-    ("Every index", "NIFTY, BANKNIFTY and SENSEX weeklies, not NIFTY alone."),
-    ("Every stock's options", "The full stock F&O universe, at the same one-minute "
-                              "resolution."),
-    ("Ten years, not one", "History back to 2016–2018 depending on the instrument, "
-                           "so a strategy meets 2020 and 2022 before your money does."),
-    ("No hourly ceiling", "Unlimited backtests. Run the grid."),
-    ("Everything the free tier has", "Same engine, same honesty panel, same reports. "
-                                     "Only the data changes."),
+    ("Full history", "NIFTY from January 2019, SENSEX from August 2023."),
+    ("Higher limits", "Far more backtests an hour than the free tier."),
+    ("Same product", "Same engine, reports and honesty panel. Only the window changes."),
+]
+
+# The roadmap, kept visibly separate from the list above. These are NOT served.
+PREMIUM_LATER = [
+    ("BANKNIFTY and stock options", "Monthly chain and top stocks first."),
+    ("NIFTY before 2019", "Back to 2010, once cleaned."),
 ]
 
 
@@ -1077,13 +1232,25 @@ def pricing_view(base_url, account=None, message=None, joined=False):
         "message": message,
         "joined": joined,
         "on_list": on_list or joined,
+        # The window matrix, READ FROM THE ENGINE rather than written here. Two symbols
+        # with different starts is exactly the kind of fact a hand-written page gets
+        # wrong once and then keeps wrong, which is how this page came to promise ten
+        # years of a symbol whose data starts in 2023.
+        "windows": [
+            {"symbol": sym,
+             "free": _window_row(spec_mod.window_for("free", sym)),
+             "premium": _window_row(spec_mod.window_for("pro", sym))}
+            for sym in spec_mod.SYMBOLS
+        ],
+        "later": PREMIUM_LATER,
         "free": {
             "name": "Free",
             "price": "₹0",
             "sub": "No card. No trial clock. Free stays free.",
             "items": [
-                f"NIFTY weekly options, one-minute prices",
-                f"{_span_words(win_from, win_to)} of history ({win_from} to {win_to})",
+                f"{' and '.join(spec_mod.SYMBOLS)} weekly options, one-minute prices",
+                f"{_span_words(win_from, win_to)} of history ({win_from} to {win_to}), "
+                f"the same window for both",
                 f"{free.requests_per_hour} backtests an hour, "
                 f"{free.metadata_requests_per_hour:,} other calls",
                 "Every strategy feature: any legs, any rules, every signal",
@@ -1096,11 +1263,19 @@ def pricing_view(base_url, account=None, message=None, joined=False):
         "premium": {
             "name": "Premium",
             "price": "Not priced yet",
-            "sub": ("It is being built. There is no price, no date, and no card to enter "
-                    "— only a list to be on when it is ready."),
+            # THE DATA IS BUILT; THE PRICE IS NOT SET. Those are different sentences and
+            # the page used to collapse them into "it is being built", which understated
+            # what exists the moment the second symbol went live. Nothing on this site
+            # takes a card, so the only honest action is still the list.
+            "sub": "The data is live. The price isn't set yet, so there's nothing to pay.",
             "items": PREMIUM_PROMISE,
         },
     }
+
+
+def _window_row(window):
+    a, b = window
+    return {"from": str(a), "to": str(b), "span": _span_words(a, b)}
 
 
 def _span_words(a, b):

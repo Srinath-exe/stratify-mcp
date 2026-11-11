@@ -479,6 +479,8 @@ def test_no_endpoint_exposes_an_untraded_strike(client, key):
 
 def test_coverage_is_public_and_returns_only_metadata(client):
     body = client.get("/v1/coverage").json()
+    if body.get("available") is False and not _conftest._database_is_reachable():
+        pytest.skip(_conftest._SKIP_REASON)
     assert body["trading_days"] == 246
     assert "withheld" in body and "debit_spread" in body["withheld"]
     assert "close" not in json.dumps(body)
@@ -752,7 +754,7 @@ def test_the_schema_advertises_cadence_and_exit_time():
 def test_ambient_instructions_say_intraday_is_expressible():
     text = knowledge.SERVER_INSTRUCTIONS
     assert "cadence 'daily'" in text and "exit_time" in text
-    assert "should not tell a user it is not" in text
+    assert "\"buy at 11, sell at 2, every day\" is cadence 'daily'" in text
 
 
 def test_coverage_advertises_both_cadences_and_the_release_policy(client):

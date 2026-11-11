@@ -254,8 +254,17 @@ def panel(result, summary, api_key_id="anonymous", now=None, log_variant=True):
                       "pnl_rupees": round(sum(t.pnl_rupees for t in ins), 2)},
         "out_of_sample": {"n_trades": len(oos), "mean_return_on_margin": round(oos_rom, 5),
                           "pnl_rupees": round(oos_pnl, 2)},
-        "held_up": bool(oos_pnl > 0 and oos_rom >= 0.5 * ins_rom),
+        # AN EDGE HAS TO EXIST BEFORE IT CAN HOLD UP. "Kept at least half the in-sample
+        # return" is trivially true of a NEGATIVE in-sample return, so a strategy that lost
+        # money for 70% of the window and got lucky in the last 30% scored 25/25 here and
+        # entered the strategy book (QA, 11 Nov 2026).
+        "held_up": bool(sum(t.pnl_rupees for t in ins) > 0 and ins_rom > 0
+                        and oos_pnl > 0 and oos_rom >= 0.5 * ins_rom),
     }
+    if sum(t.pnl_rupees for t in ins) <= 0 or ins_rom <= 0:
+        out["out_of_sample"]["note"] = (
+            "the in-sample period did not make money, so there was no edge for the "
+            "held-out slice to confirm")
     if len(oos) < metrics.MIN_TRADES_FOR_RATIOS:
         out["out_of_sample"]["caveat"] = (
             f"the held-out slice is only {len(oos)} trades, so it is directional evidence "
@@ -282,20 +291,35 @@ def panel(result, summary, api_key_id="anonymous", now=None, log_variant=True):
               spec.gate, spec.bias, spec.date_from, spec.date_to)).encode()).hexdigest()[:16]
     n_variants, trial_sharpes = recent_variants(api_key_id, family, now)
     observed = (summary.get("ratios") or {}).get("sharpe")
+    # THE TEST TAKES A PER-OBSERVATION SHARPE. Bailey & Lopez de Prado's formula pairs the
+    # Sharpe with sqrt(n - 1) where n is the number of returns -- here, trades -- so the
+    # Sharpe must be per trade. This was fed the ANNUALISED Sharpe, which overstated the
+    # probability badly: 0.93 where the per-trade figure gives 0.66 (QA, 11 Nov 2026).
+    # The annualised number is still what is displayed; the per-trade one is what is
+    # tested and what is logged for the variant spread. (Trial Sharpes logged before this
+    # change were annualised; they age out of the 24-hour window on their own.)
+    per_trade = None
+    if len(roms) > 1:
+        sd = statistics.stdev(roms)
+        per_trade = statistics.mean(roms) / sd if sd > 0 else None
     if log_variant:
-        record_variant(api_key_id, family, spec_hash, observed, now)
+        record_variant(api_key_id, family, spec_hash, per_trade, now)
         # Re-read rather than incrementing: re-running an identical spec is not a new
         # variant, and must not deflate the result as though the user had searched wider.
         n_variants, trial_sharpes = recent_variants(api_key_id, family, now)
 
     dsr, sr0, basis = (None, None, "no Sharpe to deflate")
-    if observed is not None:
-        dsr, sr0, basis = deflated_sharpe(roms, observed, max(1, n_variants), trial_sharpes)
+    if per_trade is not None:
+        dsr, sr0, basis = deflated_sharpe(roms, per_trade, max(1, n_variants), trial_sharpes)
     out["multiple_comparisons"] = {
         "variants_tested_last_24h": n_variants,
         "scope": f"this API key, structure {family!r}",
         "observed_sharpe": observed,
+        "per_trade_sharpe": round(per_trade, 4) if per_trade is not None else None,
         "expected_max_sharpe_under_null": sr0,
+        "sharpe_units": ("per_trade_sharpe and expected_max_sharpe_under_null are per "
+                         "trade, which is what the test compares; observed_sharpe is "
+                         "annualised for reading"),
         "deflated_sharpe_probability": dsr,
         "basis": basis,
         "reading": _dsr_reading(dsr, n_variants),
@@ -303,6 +327,16 @@ def panel(result, summary, api_key_id="anonymous", now=None, log_variant=True):
 
     out["health_score"], out["score_breakdown"] = _score(out, len(trades))
     out["verdict"] = _verdict(out)
+    # A RESULT THE SERVICE CALLS IMPLAUSIBLE CANNOT ALSO BE ITS BEST VERDICT. metrics warns
+    # above the Sharpe sanity ceiling ("treat it as a probable artefact"), and the same run
+    # was still labelled survived_every_check_applied, 99/100 (QA, 11 Nov 2026).
+    if (observed is not None and observed > metrics.SHARPE_SANITY_CEILING
+            and out["verdict"] == "survived_every_check_applied"):
+        out["verdict"] = "mixed_evidence"
+        out["verdict_capped"] = (
+            f"Sharpe {observed} is above the sanity ceiling of "
+            f"{metrics.SHARPE_SANITY_CEILING}, which usually means a sample or data "
+            f"artefact rather than an edge, so the top verdict is withheld.")
     out["explanation"] = (
         "This is evidence and its limits, not a recommendation. A high score means the "
         "result survived the checks applied here; it does not mean the strategy will "

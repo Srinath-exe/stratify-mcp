@@ -277,7 +277,9 @@ def test_read_only_hints_match_what_the_tool_actually_does():
     """A tool that writes must not claim readOnlyHint, because Claude uses that hint to
     skip the confirmation prompt. Getting it wrong is worse than omitting it."""
     from server import tools as tools_mod
-    writes = {"submit_feedback", "build_report"}
+    # run_backtest stores its result (that is what report_url and get_backtest read back),
+    # so it is not read-only either: additive, never destructive.
+    writes = {"submit_feedback", "build_report", "run_backtest"}
     for tool in tools_mod.TOOLS:
         ann = tool["annotations"]
         expected = tool["name"] not in writes

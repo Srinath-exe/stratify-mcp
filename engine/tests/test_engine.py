@@ -50,13 +50,64 @@ def test_debit_spread_is_refused_with_a_reason():
 def test_unknown_param_is_an_error_not_ignored():
     with pytest.raises(spec_mod.SpecError, match="does not take"):
         spec_mod.parse({"structure": "short_strangle",
-                        "params": {"pct_offset": 1.5, "tp_pct": 0.5}})
+                        "params": {"pct_offset": 1.5, "pct_width": 1.0}})
 
 
-def test_non_nifty_symbol_refused():
-    with pytest.raises(spec_mod.SpecError, match="NIFTY only"):
+def test_a_short_strangle_may_take_a_profit_target():
+    """It takes in a credit, so it can give part of it back on purpose.
+
+    tp_pct was accepted on credit_spread and refused here, so "stop at 2x the credit,
+    target 60%" -- the most ordinary managed-strangle instruction there is -- could not
+    be written as a preset at all, and the refusal read as the feature not existing.
+    """
+    parsed = spec_mod.parse({"structure": "short_strangle",
+                             "params": {"pct_offset": 1.5, "sl_mult": 2.0,
+                                        "tp_pct": 0.6}})
+    assert parsed.params["tp_pct"] == 0.6
+
+    from engine import exits
+    sl, tp = exits.levels_for(parsed, entry_credit=100.0, width_pts=None)
+    assert sl == pytest.approx(-300.0)          # premium trebled: 2x the credit lost
+    assert tp == pytest.approx(-40.0)           # 60% of the credit banked
+
+
+def test_unserved_symbol_refused():
+    """NIFTY and SENSEX are served; everything else is refused by name, and the refusal
+    lists what IS available -- a bare "not available" sends the caller guessing."""
+    with pytest.raises(spec_mod.SpecError, match="BANKNIFTY"):
         spec_mod.parse({"structure": "iron_fly", "symbol": "BANKNIFTY",
                         "params": {"pct_width": 1.0}})
+
+
+def test_sensex_is_served():
+    parsed = spec_mod.parse({"structure": "iron_fly", "symbol": "SENSEX",
+                             "params": {"pct_width": 1.0}}, tier="free")
+    assert parsed.symbol == "SENSEX"
+
+
+def test_sensex_window_is_its_own_not_niftys():
+    """SENSEX has no data before 2023-08-07 whatever the tier. A paid SENSEX spec reaching
+    back to NIFTY's 2019 start must be refused, not accepted and then served nothing --
+    which is what happens if the window is read before the symbol is known."""
+    with pytest.raises(spec_mod.SpecError, match="your tier serves"):
+        spec_mod.parse({"structure": "iron_fly", "symbol": "SENSEX",
+                        "params": {"pct_width": 1.0},
+                        "period": {"from": "2019-01-01", "to": "2026-06-30"}}, tier="pro")
+    # the same period IS allowed for NIFTY on the same tier
+    ok = spec_mod.parse({"structure": "iron_fly", "symbol": "NIFTY",
+                         "params": {"pct_width": 1.0},
+                         "period": {"from": "2019-01-01", "to": "2026-06-30"}}, tier="pro")
+    assert ok.date_from == spec_mod.dt.date(2019, 1, 1)
+
+
+def test_each_symbol_binds_its_own_serving_database():
+    """A forgotten binding would serve a SENSEX spec from NIFTY's chain, and every number
+    would be plausible and wrong. backtest.run() binds from the spec, so the mapping must
+    cover every served symbol."""
+    from engine import db as db_mod
+    for sym in spec_mod.SYMBOLS:
+        assert sym in db_mod.SYMBOL_DB, f"{sym} has no serving database"
+    assert db_mod.SYMBOL_DB["NIFTY"] != db_mod.SYMBOL_DB["SENSEX"]
 
 
 def test_window_outside_the_tier_is_refused():

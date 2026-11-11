@@ -245,7 +245,7 @@ function draw(){
   var v=el('div','v',root);
 
   var hd=el('div','hd',v), l=el('div',null,hd);
-  el('div','ti',l,(sp.structure||'backtest').replace(/_/g,' ')+' · NIFTY weeklies');
+  el('div','ti',l,(sp.structure||'backtest').replace(/_/g,' ')+' · '+(sp.symbol||'NIFTY')+' weeklies');
   el('div','sp',l,((s.period||{}).from||'?')+' → '+((s.period||{}).to||'?')+
     '  ·  '+(s.n_trades||'?')+' trades  ·  1-min data, net of costs');
   var vd=el('div','vd '+(VD[h.verdict]||'mid'),hd);

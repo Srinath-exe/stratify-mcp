@@ -31,14 +31,15 @@ STYLE = """
    serif, the same four brand surfaces that number the report's sections number these
    pages' steps. Committed to dark on purpose -- the report is dark-only by design and a
    site that flips to cream would make the two feel like different companies. */
-:root{--bg:#131313;--surface:#1C1C1C;--surface-2:#2B2B2B;--fg:#FFFFFF;
-  --fg-muted:#BABABA;--fg-subtle:#898989;--stroke:#424242;--line:var(--stroke);
+:root{--bg:#131313;--surface:#1A1A1A;--surface-2:#232323;--fg:#FFFFFF;
+  --fg-muted:#BABABA;--fg-subtle:#8E8E8E;--stroke:#2F2F2F;--line:var(--stroke);
   --muted:var(--fg-muted);
   --brand-green:#8DDD8D;--brand-yellow:#E0E055;--brand-blue:#6066EE;--brand-pink:#FAAAFA;
   --good:#0AE448;--bad:#FF5470;--warn:var(--brand-yellow);--accent:var(--brand-green);
-  --font-display:"Instrument Serif",Georgia,"Times New Roman",serif;
-  --font-ui:"Spline Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-  --font-mono:"Spline Sans Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --font-display:"Geist",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --font-ui:"Geist",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --font-mark:"Instrument Serif",Georgia,"Times New Roman",serif;
   --radius:20px;--radius-sm:12px;--pill:9999px;--gap:16px;--measure:62ch;
   --ease:cubic-bezier(.23,1,.32,1);
   --elev:0 1px 0 0 rgba(255,255,255,.04),0 12px 32px -16px rgba(0,0,0,.7)}
@@ -48,16 +49,26 @@ body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-ui);
   font-size:16px;line-height:1.6;-webkit-font-smoothing:antialiased;
   text-rendering:optimizeLegibility}
 ::selection{background:var(--brand-green);color:#131313}
+/* THE FOCUS RING AND THE CARET. Inputs set `outline:none` and replaced it with a border
+   colour, which is invisible to anyone navigating by keyboard on a BUTTON or a LINK --
+   those kept the browser's default ring, which belongs to no design system, and the
+   inputs' own border change is too quiet to find. One ring, from the palette, on every
+   focusable thing, and only for keyboard users so a mouse click does not light it up. */
+:focus-visible{outline:2px solid var(--brand-green);outline-offset:3px;
+  border-radius:var(--radius-sm)}
+.btn:focus-visible{outline-offset:2px}
+html{caret-color:var(--brand-green)}
 a{color:var(--brand-green);text-decoration:none}
 a:hover{text-decoration:underline;text-underline-offset:3px}
 code,pre{font-family:var(--font-mono);font-size:.86rem}
 pre{background:#0D0D0D;border:1px solid var(--stroke);border-radius:var(--radius-sm);
   padding:14px 16px;overflow-x:auto;margin:0;line-height:1.55;color:var(--fg-muted);
   overscroll-behavior-x:contain}
-h1,h2,h3{font-weight:400;margin:0;text-wrap:balance;letter-spacing:-.015em}
-h1{font-family:var(--font-display);font-size:clamp(2.4rem,5.5vw,4.2rem);line-height:1.02}
-h2{font-family:var(--font-display);font-size:clamp(1.7rem,3.2vw,2.5rem);line-height:1.1;
-  margin:56px 0 18px}
+h1,h2,h3{font-weight:600;margin:0;text-wrap:balance;letter-spacing:-.03em}
+h1{font-family:var(--font-display);font-size:clamp(2.2rem,4.6vw,3.6rem);line-height:1.02;
+  letter-spacing:-.045em}
+h2{font-family:var(--font-display);font-size:clamp(1.45rem,2.4vw,1.9rem);line-height:1.15;
+  margin:56px 0 16px}
 h3{font-family:var(--font-ui);font-size:1.05rem;font-weight:500;margin:0 0 6px;
   letter-spacing:0}
 p{margin:0 0 12px;max-width:var(--measure)}
@@ -71,20 +82,20 @@ p{margin:0 0 12px;max-width:var(--measure)}
 .narrow{max-width:640px}
 
 /* ---- chrome --------------------------------------------------------------------- */
-header.top{position:sticky;top:0;z-index:20;background:rgba(19,19,19,.86);
+header.top{position:sticky;top:0;z-index:20;background:rgba(19,19,19,.82);
   backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
   border-bottom:1px solid var(--stroke)}
 header.top .inner{max-width:1240px;margin:0 auto;padding:12px 24px;display:flex;
   align-items:center;gap:22px;flex-wrap:wrap}
-.brand{font-family:var(--font-display);font-size:1.35rem;color:var(--fg);letter-spacing:0;display:inline-flex;align-items:center;gap:9px}
+.brand{font-family:var(--font-mark);font-size:1.4rem;color:var(--fg);letter-spacing:0;display:inline-flex;align-items:center;gap:9px}
 .brand .mark{width:28px;height:28px;display:block}
 .brand:hover{text-decoration:none}
 nav.main{display:flex;gap:4px;flex-wrap:wrap}
-nav.main a{font-family:var(--font-mono);font-size:.74rem;letter-spacing:.04em;
+nav.main a{font-family:var(--font-ui);font-size:.86rem;font-weight:500;letter-spacing:0;
   color:var(--fg-muted);padding:6px 12px;border-radius:var(--pill);
   border:1px solid transparent;transition:all .25s var(--ease)}
 nav.main a:hover{color:var(--fg);text-decoration:none;border-color:var(--stroke)}
-nav.main a.on{color:#131313;background:var(--brand-green);border-color:var(--brand-green)}
+nav.main a.on{color:var(--fg);background:var(--surface-2);border-color:var(--stroke)}
 .spacer{flex:1}
 /* On a phone the header was 230px tall: brand, three links and the button each took a
    row. Brand and the button stay on the first row; the links wrap to one line beneath
@@ -128,7 +139,34 @@ input[type=email],input[type=text],input[type=number],input[type=password],selec
   border-radius:var(--pill);padding:11px 16px;min-height:44px;outline:none;
   transition:border-color .2s var(--ease)}
 input:focus,select:focus{border-color:var(--brand-green)}
+input:focus-visible,select:focus-visible{outline-offset:1px}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+
+/* ---- the window matrix -----------------------------------------------------------
+   Two symbols whose history starts in different years, across two tiers. That is a
+   table: four date ranges a reader compares against each other, and prose made the
+   difference between them easy to miss. Dates are mono and tabular so the digits line
+   up in a column and a shorter span is visible as a shorter string. */
+.windows{width:100%;border-collapse:collapse;margin:0}
+.windows th,.windows td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--stroke)}
+.windows thead th{font-size:.74rem;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--fg-subtle);font-weight:500;padding-bottom:9px}
+.windows tbody tr:last-child td{border-bottom:0}
+.windows .sym{font-weight:500;color:var(--fg)}
+.windows .w{font-family:var(--font-mono);font-size:.82rem;font-variant-numeric:tabular-nums;
+  color:var(--fg-muted);white-space:nowrap}
+.windows .span{display:block;font-family:var(--font-ui);font-size:.78rem;color:var(--fg-subtle)}
+.windows th.pm,.windows td.pm{background:rgba(250,170,250,.045)}
+.windows thead th.pm{color:var(--brand-pink)}
+.windows thead th.fr{color:var(--brand-green)}
+/* The table is the one element here that can outgrow a phone, so it scrolls on its own
+   rather than making the page scroll sideways. */
+.windows-wrap{overflow-x:auto;overscroll-behavior-x:contain;margin:0 0 var(--gap)}
+.later{list-style:none;padding:0;margin:14px 0 0}
+.later li{padding:9px 0 0;border-top:1px solid var(--stroke);margin-top:9px}
+.later li:first-child{border-top:0;margin-top:0}
+.later b{display:block;font-weight:500;color:var(--fg-muted);font-size:.9rem}
+.later span{font-size:.86rem;color:var(--fg-subtle)}
 
 /* ---- surfaces ------------------------------------------------------------------- */
 .card{background:var(--surface);border:1px solid var(--stroke);border-radius:var(--radius);
@@ -167,9 +205,16 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;width:auto;heig
 .tag.ok{color:var(--good);border-color:currentColor}
 .tag.bad{color:var(--bad);border-color:currentColor}
 .tag.warn{color:var(--warn);border-color:currentColor}
-.note{border-left:3px solid var(--brand-green);padding:10px 0 10px 16px;margin:0 0 var(--gap);
+/* An alert is a SURFACE, not a tab. This was a 3px coloured left border, which reads as
+   decoration stuck to the side of text rather than as a region the message lives in --
+   and the site already states its surfaces one way: a tinted ground inside a 1px border
+   at the small radius, the same grammar as .card and .tag. The tint carries the semantic
+   hue so "wrong" is legible before the sentence is read. */
+.note{background:rgba(141,221,141,.07);border:1px solid rgba(141,221,141,.26);
+  border-radius:var(--radius-sm);padding:11px 15px;margin:0 0 var(--gap);
   color:var(--fg-muted);font-size:.92rem;max-width:var(--measure)}
-.note.bad{border-color:var(--bad);color:var(--bad)}
+.note.bad{background:rgba(255,84,112,.08);border-color:rgba(255,84,112,.3);
+  color:var(--bad)}
 .meter{height:6px;background:var(--surface-2);border-radius:3px;overflow:hidden;margin-top:10px}
 .meter i{display:block;height:100%;background:var(--brand-green)}
 .meter i.full{background:var(--bad)}
@@ -196,8 +241,8 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;width:auto;heig
   box-shadow:var(--elev);transition:transform .3s var(--ease)}
 .step:hover{transform:translateY(-3px)}
 .step .n{font-family:var(--font-mono);font-size:.74rem;letter-spacing:.1em;opacity:.7}
-.step h3{font-family:var(--font-display);font-size:1.7rem;font-weight:400;margin:0;
-  line-height:1.05;letter-spacing:-.01em}
+.step h3{font-family:var(--font-display);font-size:1.5rem;font-weight:600;margin:0;
+  line-height:1.08;letter-spacing:-.03em}
 .step p{margin:0;font-size:.95rem;line-height:1.5;opacity:.88;max-width:none}
 .step .act{margin-top:auto;padding-top:6px}
 .step .btn{border-color:rgba(0,0,0,.35);color:inherit;background:rgba(0,0,0,.12)}
@@ -205,7 +250,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;width:auto;heig
 .q2 .step .btn,.step.q2 .btn{border-color:rgba(255,255,255,.4);background:rgba(255,255,255,.12)}
 .qa{display:grid;gap:var(--gap)}
 @media(min-width:760px){.qa{grid-template-columns:repeat(3,1fr)}}
-.qa .card h3{font-family:var(--font-display);font-size:1.4rem;margin:0 0 10px}
+.qa .card h3{font-family:var(--font-display);font-size:1.25rem;margin:0 0 10px}
 .qa .card p{font-size:.95rem;color:var(--fg-muted);margin:0;max-width:none}
 .exchange{display:grid;gap:var(--gap)}
 @media(min-width:860px){.exchange{grid-template-columns:5fr 6fr}}
@@ -213,7 +258,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;width:auto;heig
   font-size:1.02rem;line-height:1.55;position:relative}
 .bubble .who{font-family:var(--font-mono);font-size:.68rem;letter-spacing:.1em;
   text-transform:uppercase;color:var(--fg-subtle);margin:0 0 8px}
-.gbtn{background:#fff;color:#1f1f1f;border-color:#fff}
+.gbtn{background:#fff;color:#1f1f1f;border-color:#fff;font-weight:500}
 .err{color:var(--brand-pink)}
 .reach{display:grid;grid-template-columns:max-content 1fr;gap:8px 18px;margin:12px 0 0;
   font-variant-numeric:tabular-nums}
@@ -247,7 +292,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;width:auto;heig
 .plans{display:grid;gap:var(--gap);margin-top:24px;align-items:stretch}
 @media(min-width:800px){.plans{grid-template-columns:1fr 1fr}}
 .plan{display:flex;flex-direction:column;gap:14px;margin:0}
-.plan .price{font-family:var(--font-display);font-size:2.6rem;line-height:1;margin:6px 0 0}
+.plan .price{font-family:var(--font-display);font-size:2.4rem;font-weight:650;letter-spacing:-.04em;line-height:1;margin:6px 0 0}
 .plan .sub{color:var(--fg-muted);font-size:.95rem;margin:0}
 .plan ul{list-style:none;padding:0;margin:8px 0 0;display:grid;gap:10px}
 .plan li{padding-left:26px;position:relative;font-size:.97rem;line-height:1.45}
@@ -278,6 +323,74 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;width:auto;heig
 .toc{position:sticky;top:76px}
 .toc a{display:block;padding:4px 0;font-size:.88rem;color:var(--fg-muted)}
 @media(min-width:900px){.docs{display:grid;grid-template-columns:200px 1fr;gap:36px}}
+/* ---- copy blocks and client tabs (DESIGN.md: every command is a copy block) ------ */
+.cb{position:relative;background:#0E0E0E;border:1px solid var(--stroke);border-radius:12px}
+.cb pre{border:0;background:transparent;padding:14px 92px 14px 16px;color:#E6E6E6;
+  white-space:pre-wrap;word-break:break-all}
+.cb .copy{position:absolute;top:8px;right:8px}
+.copy{all:unset;cursor:pointer;font:500 .78rem/1 var(--font-ui);padding:8px 12px;
+  border-radius:8px;background:var(--surface-2);color:var(--fg);transition:background .2s var(--ease)}
+.copy:hover{background:#333}.copy.ok{background:var(--brand-green);color:#131313}
+.copy:focus-visible{outline:2px solid var(--brand-green);outline-offset:2px}
+.setup{margin:14px 0 var(--gap)}
+.tabrow{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+.tabrow button{all:unset;cursor:pointer;font:500 .84rem/1 var(--font-ui);padding:8px 13px;
+  border-radius:999px;border:1px solid var(--stroke);color:var(--fg-muted);
+  transition:all .2s var(--ease)}
+.tabrow button:hover{color:var(--fg);border-color:#444}
+.tabrow button[aria-selected="true"]{background:var(--fg);color:#131313;border-color:var(--fg)}
+.tabrow button:focus-visible{outline:2px solid var(--brand-green);outline-offset:2px}
+[data-tabs] [data-off]{display:none}
+.tabpanel .where{font-size:.9rem;color:var(--fg-muted);margin:0 0 8px}
+.keyline{display:flex;align-items:center;gap:10px;background:#0E0E0E;
+  border:1px solid rgba(141,221,141,.45);border-radius:12px;padding:8px 8px 8px 14px;margin:8px 0}
+.keyline code{flex:1;min-width:0;font-size:.92rem;color:var(--brand-green);word-break:break-all}
+
+/* ---- docs: sidebar, one reading column ------------------------------------------- */
+.docs{display:grid;gap:40px}
+@media(min-width:960px){.docs{grid-template-columns:220px minmax(0,1fr)}}
+.dnav{position:sticky;top:84px;align-self:start;display:flex;flex-direction:column;gap:18px;
+  max-height:calc(100vh - 110px);overflow:auto;padding-right:6px}
+.dnav .grp{display:flex;flex-direction:column;gap:2px}
+.dnav .gt{font-family:var(--font-mono);font-size:.66rem;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--fg-subtle);margin:0 0 6px 10px}
+.dnav a{font-size:.9rem;color:var(--fg-muted);padding:6px 10px;border-radius:8px;
+  transition:all .2s var(--ease)}
+.dnav a:hover{color:var(--fg);background:var(--surface);text-decoration:none}
+.dnav a.on{color:var(--fg);background:var(--surface-2)}
+@media(max-width:959px){.dnav{position:static;max-height:none;flex-direction:row;
+  flex-wrap:nowrap;overflow-x:auto;gap:4px;padding:0 0 6px;scrollbar-width:none}
+  .dnav .gt{display:none}.dnav .grp{flex-direction:row;gap:4px}
+  .dnav a{white-space:nowrap;border:1px solid var(--stroke);border-radius:999px;font-size:.82rem}}
+.doc{max-width:780px;min-width:0}
+.doc > section{scroll-margin-top:84px;padding-bottom:8px}
+.doc h1{margin:0 0 12px}
+.doc .lede{font-size:1.1rem;color:var(--fg-muted);max-width:60ch;margin:0 0 24px}
+.doc h2{margin:56px 0 12px;padding-top:24px;border-top:1px solid var(--stroke)}
+.doc h2 a.anchor{color:inherit}
+.doc h2 a.anchor:hover{text-decoration:none;color:var(--brand-green)}
+.doc h3{margin:28px 0 8px;font-size:1.05rem}
+.doc p,.doc li{color:#D6D6D6}
+.doc p code,.doc li code,.doc td code{background:var(--surface-2);padding:2px 6px;
+  border-radius:6px;font-size:.84em;color:#EDEDED}
+.doc pre{margin:10px 0 16px}
+.doc table{margin:8px 0 16px}
+.steps3{display:grid;gap:12px;counter-reset:s;margin:16px 0}
+.steps3 > div{display:grid;grid-template-columns:34px 1fr;gap:12px;align-items:start;
+  background:var(--surface);border:1px solid var(--stroke);border-radius:14px;padding:14px 16px}
+.steps3 > div::before{counter-increment:s;content:counter(s);width:28px;height:28px;
+  border-radius:50%;background:var(--brand-green);color:#131313;display:grid;place-items:center;
+  font:600 .82rem var(--font-mono)}
+.steps3 b{display:block;font-weight:600;margin-bottom:2px}
+.steps3 p{margin:0;font-size:.94rem;color:var(--fg-muted)}
+.callout{display:flex;gap:12px;align-items:flex-start;background:rgba(141,221,141,.06);
+  border:1px solid rgba(141,221,141,.25);border-radius:14px;padding:14px 16px;margin:16px 0}
+.callout p{margin:0;font-size:.94rem}
+.toolgrid{display:grid;gap:8px;margin:12px 0}
+@media(min-width:720px){.toolgrid{grid-template-columns:1fr 1fr}}
+.toolgrid div{border:1px solid var(--stroke);border-radius:12px;padding:12px 14px}
+.toolgrid code{color:var(--brand-green);font-size:.86rem}
+.toolgrid span{display:block;font-size:.88rem;color:var(--fg-muted);margin-top:4px}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 """
 # END STYLE
@@ -302,9 +415,9 @@ def _json(obj):
 # than one click from "what is this" or "what does it cost". The dashboard's own nav
 # (NAV in site.py) is shown INSTEAD once signed in -- two navs stacked is a mess.
 SITE_NAV = [
+    {"key": "docs", "label": "Docs", "href": "/docs"},
     {"key": "explore", "label": "Explore", "href": "/explore"},
     {"key": "pricing", "label": "Pricing", "href": "/pricing"},
-    {"key": "docs", "label": "Docs", "href": "/docs"},
 ]
 
 GOOGLE_G = ('<svg class="g" viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" '
@@ -317,21 +430,71 @@ GOOGLE_G = ('<svg class="g" viewBox="0 0 24 24" aria-hidden="true"><path fill="#
             '6.7-4.9z"/></svg>')
 
 
-def shell(title, body, nav=None, you=None, active=None, wide=False):
-    """The page frame. Every page on the site goes through here."""
+# One sentence per public page, for the search snippet and the link preview. Written for
+# a person deciding whether to click, not stuffed with terms: a description that reads
+# like keywords is the one Google replaces with its own guess.
+PAGE_DESCRIPTIONS = {
+    "/": "Backtest any NIFTY or SENSEX options strategy from your AI assistant. Seven "
+         "years of minute data, walk-forward folds and a benchmark on every result.",
+    "/explore": "What the data covers, which strategies have survived out-of-sample "
+                "testing, and the rules you can express.",
+    "/pricing": "Free tier with a year of NIFTY history, and paid tiers for the full "
+                "index and stock-options coverage.",
+    "/docs": "Connect Stratify to Claude, ChatGPT or any MCP client, and the full tool "
+             "and strategy-spec reference.",
+    "/privacy": "What Stratify stores, what it never stores, and how to have your "
+                "account deleted.",
+    "/terms": "Terms of use for the Stratify MCP server.",
+    "/contact": "How to reach us about an account, a bug or a data question.",
+}
+# A plain constant, not an environment read: this file imports nothing but `html` on
+# purpose, so that a redesign is a rewrite of one file with no dependencies to satisfy.
+# The canonical origin is content, and it belongs with the copy it appears in.
+SITE_ORIGIN = "https://stratify.aeon-labs.site"
+
+
+def shell(title, body, nav=None, you=None, active=None, wide=False, path=None,
+          description=None, signed_in=False):
+    """The page frame. Every page on the site goes through here.
+
+    `path` and `description` drive the crawl and link-preview tags. They were missing
+    entirely -- no description, no canonical, no Open Graph -- so a shared link rendered
+    as a bare URL and a search result got whatever sentence Google chose to lift.
+    """
+    desc = description or PAGE_DESCRIPTIONS.get(path or "", PAGE_DESCRIPTIONS["/"])
+    canonical = SITE_ORIGIN + (path or "/")
+    meta = f'''<meta name="description" content="{esc(desc)}">
+<link rel="canonical" href="{esc(canonical)}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Stratify">
+<meta property="og:title" content="{esc(title)}">
+<meta property="og:description" content="{esc(desc)}">
+<meta property="og:url" content="{esc(canonical)}">
+<meta property="og:image" content="{esc(SITE_ORIGIN)}/static/icon-192.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="{esc(title)}">
+<meta name="twitter:description" content="{esc(desc)}">'''
     links = "".join(
         f'<a href="{esc(n["href"])}" class="{"on" if n["key"] == active else ""}">'
         f'{esc(n["label"])}</a>' for n in (nav or SITE_NAV))
-    right = ('<a class="btn small" href="/logout">Sign out</a>' if you else
-             f'<a class="btn small primary" href="/auth/google?next=/app">Sign in</a>')
+    if you:
+        right = '<a class="btn small" href="/logout">Sign out</a>'
+    elif signed_in:
+        right = '<a class="btn small primary" href="/app">Dashboard</a>'
+    else:
+        right = (f'<a class="btn small gbtn" href="/auth/google?next=/app">{GOOGLE_G}'
+                 f'Continue with Google</a>')
     who = (f'<span class="small subtle">{esc(you["email"])}</span>' if you else "")
     return f"""<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>{esc(title)}</title>
+{meta}
 <link rel="icon" href="/favicon.ico" sizes="32x32"><link rel="icon" href="/static/icon-192.png" type="image/png" sizes="192x192"><link rel="apple-touch-icon" href="/static/icon-192.png">
+<link rel="alternate" type="text/markdown" href="/llms.txt" title="Setup guide for AI agents">
+<link rel="preload" href="/static/geist.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/fonts.css">
-<style>{STYLE}</style></head><body>
+<style>{STYLE}</style><script src="/static/site.js" defer></script></head><body>
 <header class="top"><div class="inner">
 <a class="brand" href="/"><img class="mark" src="/static/icon-64.png" width="28" height="28" alt="">Stratify</a>
 <nav class="main">{links}</nav>
@@ -340,6 +503,7 @@ def shell(title, body, nav=None, you=None, active=None, wide=False):
 <main class="wrap{' wide' if wide else ''}">{body}</main>
 <footer class="site"><div class="inner">
 <a href="/explore">Explore</a><a href="/pricing">Pricing</a><a href="/docs">Docs</a>
+<a href="/llms.txt">For AI agents</a>
 <a href="/app">Dashboard</a><a href="/privacy">Privacy</a>
 <a href="/terms">Terms</a><a href="/contact">Contact</a>
 <span class="spacer"></span><span>{esc(DISCLAIMER)}</span>
@@ -446,7 +610,8 @@ report link.</p>
 </div><p class="small muted" style="margin-top:16px">{esc(ft["note"])}
 <a href="/pricing">See what's coming →</a></p></div>
 """
-    return shell("Stratify — backtest any NIFTY options strategy", body, active="home")
+    return shell("Stratify — backtest any NIFTY options strategy", body, active="home",
+                 path="/")
 
 
 # ------------------------------------------------------------------------- explore
@@ -479,7 +644,8 @@ def explore(v):
   <a class="btn" href="{esc(v["cta_href"])}">{esc(v["cta"])} →</a>
 </div>
 """
-    return shell("Explore — Stratify", body, active="explore")
+    return shell("Explore — Stratify", body, active="explore", path="/explore",
+                 signed_in=bool(v.get("signed_in")))
 
 
 # ------------------------------------------------------------------------- pricing
@@ -492,6 +658,26 @@ def pricing(v):
     free_items = "".join(f"<li>{esc(i)}</li>" for i in f["items"])
     prem_items = "".join(f"<li><b>{esc(t)}</b><span>{esc(d)}</span></li>"
                          for t, d in pm["items"])
+    later = "".join(f"<li><b>{esc(t)}</b><span>{esc(d)}</span></li>"
+                    for t, d in v.get("later", []))
+    rows = "".join(
+        f'<tr><td class="sym">{esc(w["symbol"])}</td>'
+        f'<td class="w">{esc(w["free"]["from"])} → {esc(w["free"]["to"])}'
+        f'<span class="span">{esc(w["free"]["span"])}</span></td>'
+        f'<td class="w pm">{esc(w["premium"]["from"])} → {esc(w["premium"]["to"])}'
+        f'<span class="span">{esc(w["premium"]["span"])}</span></td></tr>'
+        for w in v.get("windows", []))
+    matrix = f"""
+<div class="windows-wrap">
+  <table class="windows">
+    <thead><tr><th scope="col">Symbol</th><th scope="col" class="fr">Free</th>
+      <th scope="col" class="pm">Premium</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+</div>
+<p class="small subtle" style="margin:0 0 30px">SENSEX index options did not exist before
+August 2023, so Premium serves it from its first expiry rather than padding the number to
+match NIFTY. Both windows are read from the engine when this page renders.</p>""" if rows else ""
 
     # THE WAITLIST FORM. Signed in: one click, their address, nothing to type. Signed out:
     # an email field. Already on it: say so and show no button, because a button that
@@ -514,11 +700,13 @@ def pricing(v):
 {msg}
 <section class="hero" style="padding-bottom:8px">
   <p class="eyebrow">Pricing</p>
-  <h1>Free now. More data later.</h1>
-  <p class="lede">The free tier is the whole product on one year of NIFTY. Premium is the
-  same product on ten years of everything — and it does not have a price yet, so the
-  only honest button is the one that tells you when it does.</p>
+  <h1>Free now. More history later.</h1>
+  <p class="lede">The free tier is the whole product on one year of both indices. Premium
+  is the same product on all of the history we hold — and it does not have a price yet,
+  so the only honest button is the one that tells you when it does.</p>
 </section>
+<h2 style="margin-top:34px">What each tier serves</h2>
+{matrix}
 <section class="plans">
   <div class="card plan">
     <p class="eyebrow" style="margin:0">{esc(f["name"])}</p>
@@ -532,13 +720,16 @@ def pricing(v):
     <div class="price">{esc(pm["price"])}</div>
     <p class="sub">{esc(pm["sub"])}</p>
     <ul>{prem_items}</ul>
+    <p class="eyebrow" style="margin:22px 0 0;color:var(--fg-subtle)">Not yet served</p>
+    <ul class="later">{later}</ul>
     {wait}
   </div>
 </section>
 <p class="small subtle" style="margin-top:22px">Joining the list is not a purchase and
 not a commitment. It is one email, once, when Premium is ready.</p>
 """
-    return shell("Pricing — Stratify", body, active="pricing")
+    return shell("Pricing — Stratify", body, active="pricing", path="/pricing",
+                 signed_in=bool(v.get("signed_in") or v.get("you")))
 
 
 # ----------------------------------------------------------------------- dashboard
@@ -558,6 +749,24 @@ def _meters(usage):
     return "".join(out)
 
 
+def setup_tabs(clients, first=None):
+    """One row of client pills, one copy block per client. Works without script: every
+    panel is in the markup (so a crawler or an agent reads them all) and site.js only
+    hides the ones not selected."""
+    first = first or clients[0]["key"]
+    tabs, panels = [], []
+    for c in clients:
+        on = c["key"] == first
+        tabs.append(f'<button type="button" role="tab" data-tab="{esc(c["key"])}" '
+                    f'aria-selected="{"true" if on else "false"}">{esc(c["label"])}</button>')
+        panels.append(f'<div class="tabpanel" role="tabpanel" data-panel="{esc(c["key"])}"'
+                      f'{"" if on else " data-off"}><p class="where">{esc(c["where"])}</p>'
+                      f'<div class="cb"><pre><code>{esc(c["body"])}</code></pre>'
+                      f'<button type="button" class="copy">Copy</button></div></div>')
+    return (f'<div class="setup" data-tabs><div class="tabrow" role="tablist" '
+            f'aria-label="Your client">{"".join(tabs)}</div>{"".join(panels)}</div>')
+
+
 def _snippets(connect):
     """Collapsed by default, one open. Six code blocks stacked is a wall; a person has
     exactly one client and wants exactly one block."""
@@ -569,32 +778,29 @@ def _snippets(connect):
 
 
 def overview(v):
-    """The signed-in home. One job: get the key into the chat app.
+    """The signed-in home. One job: get Stratify into the person's chat app.
 
-    With no key, the page is the button. With a key, the page is the one thing they
-    paste. Everything else -- usage, activity, reports -- is below the fold on purpose,
-    because none of it matters until the first backtest has run.
-    """
+    No key yet: the page is one button, and the next page shows the key already pasted
+    into a line for their client. With a key: the setup lines, then usage and activity."""
     msg = f'<div class="note">{esc(v["message"])}</div>' if v.get("message") else ""
     if not v["has_key"]:
-        first = (f'<div class="card keycta q1">'
-                 f'<p class="eyebrow" style="color:#131313;opacity:.7;margin:0">Step 2 of 3</p>'
-                 f'<h2>Make your key</h2>'
-                 f'<p>One click. It is shown once, so copy it straight into your chat '
-                 f'app. If you lose it, make another — the old one just stops working.</p>'
+        first = (f'<div class="card keycta"><p class="eyebrow" style="margin:0">One step left</p>'
+                 f'<h2>Get your setup line</h2>'
+                 f'<p class="muted">Creates your API key and pastes it into a ready-made line for '
+                 f'Claude Code, Codex, Cursor, VS Code, Gemini CLI or any AI agent. The key is '
+                 f'shown once.</p>'
                  f'<form method="post" action="/app/keys/new">'
-                 f'<button class="btn big" type="submit" style="background:#131313;'
-                 f'color:#fff;border-color:#131313">Generate my key →</button>'
-                 f'</form></div>')
+                 f'<button class="btn primary big" type="submit">Create my key</button></form>'
+                 f'<p class="small subtle" style="margin:0">Using ChatGPT or Claude.ai? You need '
+                 f'no key: add <code>{esc(v["mcp_url"])}</code> as a custom connector and sign in.</p>'
+                 f'</div>')
     else:
-        first = (f'<div class="card keycta q0">'
-                 f'<p class="eyebrow" style="color:#131313;opacity:.7;margin:0">Step 3 of 3</p>'
-                 f'<h2>Paste it into your chat app</h2>'
-                 f'<p>You have {esc(v["key_count"])} active key(s). Pick your app below, '
-                 f'copy the block, and put your key where it says <code>sk_live_...</code>. '
-                 f'Then just describe a trade.</p>'
-                 f'<div class="row"><a class="btn small" href="/app/keys">Manage keys</a>'
-                 f'<a class="btn small" href="/explore">What can I ask it?</a></div></div>')
+        first = (f'<div class="card keycta"><p class="eyebrow" style="margin:0">Connected?</p>'
+                 f'<h2>Paste one line into your client</h2>'
+                 f'<p class="muted">You have {esc(v["key_count"])} active key(s). Keys are shown '
+                 f'only once, so the lines below say <code>sk_live_YOUR_KEY</code>. Lost it? '
+                 f'<a href="/app/keys">Make a new one</a> and the page fills it in for you.</p>'
+                 f'{setup_tabs(v["connect"])}</div>')
     calls = _call_table(v["recent_calls"], compact=True) if v["recent_calls"] else \
         '<div class="empty small">Nothing yet. Your first backtest will show up here.</div>'
     reports = _report_table(v["recent_reports"]) if v["recent_reports"] else \
@@ -604,10 +810,6 @@ def overview(v):
 <div class="hello"><h1>Hello, {esc(v["you"]["name"])}</h1>
 <span class="small subtle">{esc(v["you"]["tier"])} tier · since {esc(v["you"]["member_since"])}</span></div>
 {first}
-<h2>Connect your app</h2>
-<p class="small muted">Server address: <code>{esc(v["mcp_url"])}</code> — in ChatGPT, Gemini
-or Claude on the web, that address is all you paste; you sign in instead of using a key.</p>
-{_snippets(v["connect"])}
 <h2>This hour</h2>
 <section class="grid four">{_meters(v["usage"])}</section>
 <h2>Recent activity</h2>
@@ -625,11 +827,13 @@ def keys(v):
     # SHOWN ONCE. Nothing re-renders this; there is no route that can fetch it again.
     secret = ""
     if v.get("new_key"):
-        secret = (f'<div class="secret"><strong>Your new key</strong>'
-                  f'<code>{esc(v["new_key"])}</code>'
-                  f'<p class="small muted">Copy it now. It is hashed the moment this page '
-                  f'is rendered and cannot be shown again — if you lose it, revoke it and '
-                  f'generate another.</p></div>')
+        setup = setup_tabs(v["setup"]) if v.get("setup") else ""
+        secret = (f'<div class="card keycta"><p class="eyebrow" style="margin:0">Your new key</p>'
+                  f'<div class="keyline"><code>{esc(v["new_key"])}</code>'
+                  f'<button type="button" class="copy" data-text="{esc(v["new_key"])}">Copy</button></div>'
+                  f'<p class="small muted" style="margin:0">Shown once. It is hashed as this page is '
+                  f'rendered and cannot be shown again; if you lose it, revoke it and make another.</p>'
+                  f'<h2 style="margin:18px 0 0">Paste one line into your client</h2>{setup}</div>')
     rows = "".join(
         f'<tr><td><code>{esc(k["key_id"])}</code></td>'
         f'<td>…{esc(k["last4"])}</td>'
@@ -755,75 +959,125 @@ def _dl(rows):
 
 
 def docs(v):
-    toc = "".join(f'<a href="#{esc(s["key"])}">{esc(s["title"])}</a>'
-                  for s in v["sections"])
+    """Read like a manual, not a wall: a grouped sidebar, one reading column, and the
+    setup as client tabs at the top, because that is what nearly everyone came for."""
+    groups = [("Get started", [("start", "Quickstart"), ("connect", "Connect your client"),
+                               ("agents", "For AI agents"), ("tools", "Tools")]),
+              ("Writing a strategy", [("shape", "The shape"), ("legs", "Legs"),
+                                      ("entry", "Entry"), ("rules", "Rules"),
+                                      ("portfolio", "Book rules"), ("fields", "Field reference"),
+                                      ("examples", "Worked examples")]),
+              ("Reference", [("limits", "Limits and tiers"), ("honesty", "How results are made")])]
+    nav = "".join(
+        f'<div class="grp"><div class="gt">{esc(t)}</div>'
+        + "".join(f'<a href="#{k}">{esc(l)}</a>' for k, l in items) + '</div>'
+        for t, items in groups)
+    def h2(k, title):
+        return f'<h2><a class="anchor" href="#{k}">{esc(title)}</a></h2>'
     ex = "".join(
-        f'<h3>{esc(e["title"])}</h3><p class="small muted">{esc(e["ask"])}</p>'
-        f'<pre>{_json(e["spec"])}</pre>' for e in v["examples"])
+        f'<h3>{esc(e["title"])}</h3><p>{esc(e["ask"])}</p>'
+        f'<div class="cb"><pre><code>{_json(e["spec"])}</code></pre>'
+        f'<button type="button" class="copy">Copy</button></div>' for e in v["examples"])
     fields = "".join(f'<h3>{esc(g["title"])}</h3>{_dl(g["rows"])}' for g in v["fields"])
+    tools = "".join(f'<div><code>{esc(t["name"])}</code><span>{esc(t["doc"])}</span></div>'
+                    for t in v.get("tools", []))
     tiers = "".join(
         f'<tr><td>{esc(t["name"])}</td><td>{esc(t["window"])}</td>'
         f'<td class="num">{esc(t["requests"])}/h</td>'
         f'<td class="num">{esc(t["metadata"])}/h</td>'
         f'<td class="num">{esc(t["cpu"])}</td>'
         f'<td class="num">{esc(t["concurrent"])}</td></tr>' for t in v["tiers"])
-    honesty = "".join(f'<li class="small muted">{esc(h)}</li>' for h in v["honesty"])
+    honesty = "".join(f'<li>{esc(h)}</li>' for h in v["honesty"])
     L, E, R, P = v["legs"], v["entry"], v["rules"], v["portfolio"]
+    get_key = ('<a href="/app">Create one from your dashboard</a>' if v.get("signed_in") else
+               '<a href="/auth/google?next=/app">Continue with Google</a>')
     body = f"""
 <div class="docs">
-<aside><div class="toc">{toc}</div></aside>
-<article>
+<nav class="dnav" aria-label="Documentation">{nav}</nav>
+<article class="doc">
 <h1>Documentation</h1>
+<p class="lede">Stratify is an MCP server. Connect it to the AI app you already use, then
+describe an options strategy in plain words; it runs on real one-minute NIFTY and SENSEX
+prices and answers with the result and a report.</p>
 
-<h2 id="start">Getting started</h2>
-<p>Stratify speaks <a href="https://modelcontextprotocol.io">MCP</a> over HTTP. Sign in,
-generate a key, and point a client at <code>{esc(v["mcp_url"])}</code>.</p>
-{_snippets(v["connect"])}
+<section id="start">{h2("start", "Quickstart")}
+<div class="steps3">
+<div><div><b>Get a key</b><p>{get_key}. Your key is shown once, already pasted into a
+setup line for your client. ChatGPT and Claude.ai need no key.</p></div></div>
+<div><div><b>Add Stratify to your client</b><p>Pick your client below and paste one line.
+Restart the client if it was open.</p></div></div>
+<div><div><b>Ask for a backtest</b><p>“Sell a NIFTY strangle 0.5% either side of spot at
+09:20 every trading day, exit at 15:15. Did it make money?”</p></div></div>
+</div></section>
 
-<h2 id="shape">How a strategy is written</h2>
+<section id="connect">{h2("connect", "Connect your client")}
+<p>Server address: <code>{esc(v["mcp_url"])}</code> (Streamable HTTP). Keys go in an
+<code>Authorization: Bearer</code> header. Replace <code>sk_live_YOUR_KEY</code> with your own,
+or create a key from your dashboard and every line is filled in for you.</p>
+{setup_tabs(v["connect"], first="claude-code")}
+</section>
+
+<section id="agents">{h2("agents", "For AI agents")}
+<div class="callout"><p>Setting this up for someone with an AI agent? Give the agent this
+site’s address, or point it straight at <a href="/llms.txt">/llms.txt</a>: it is the whole
+setup, written for a model to follow, including how to create an account from an email
+address and how to check the key works.</p></div>
+</section>
+
+<section id="tools">{h2("tools", "Tools")}
+<p>What your AI app can call once Stratify is connected. You never call these yourself;
+you ask in words and the app picks the tool.</p>
+<div class="toolgrid">{tools}</div></section>
+
+<section id="shape">{h2("shape", "The shape of a strategy")}
 <p>{esc(v["shape"]["body"])}</p>
-<pre>{_json(v["shape"]["skeleton"])}</pre>
+<div class="cb"><pre><code>{_json(v["shape"]["skeleton"])}</code></pre><button type="button" class="copy">Copy</button></div>
+</section>
 
-<h2 id="legs">Legs</h2>
+<section id="legs">{h2("legs", "Legs")}
 <p>{esc(L["body"])}</p>
 <h3>Strike selectors</h3>{_dl(L["strikes"])}
-<h3>Expiry</h3>{_dl(L["expiries"])}
+<h3>Expiry</h3>{_dl(L["expiries"])}</section>
 
-<h2 id="entry">Entry</h2>
+<section id="entry">{h2("entry", "Entry")}
 <p>{esc(E["body"])}</p>{_dl(E["cadences"])}
-<p class="small muted">{esc(E["note"])}</p>
+<p class="small muted">{esc(E["note"])}</p></section>
 
-<h2 id="rules">Rules</h2>
+<section id="rules">{h2("rules", "Rules")}
 <p>{esc(R["body"])}</p>
 <h3>Actions</h3>{_dl(R["actions"])}
 <p class="small muted">Comparators: <code>{esc(", ".join(R["comparators"]))}</code>.
 Combine with <code>{esc(", ".join(R["combinators"]))}</code>.
 Up to {esc(R["caps"]["legs"])} legs, {esc(R["caps"]["rules"])} rules and
-{esc(R["caps"]["adjustments"])} adjustments per trade.</p>
+{esc(R["caps"]["adjustments"])} adjustments per trade.</p></section>
 
-<h2 id="portfolio">Book rules</h2>
+<section id="portfolio">{h2("portfolio", "Book rules")}
 <p>{esc(P["body"])}</p>
-<p><code>{esc(", ".join(P["keys"]))}</code></p>
+<p><code>{esc(", ".join(P["keys"]))}</code></p></section>
 
-<h2 id="fields">Field reference</h2>
+<section id="fields">{h2("fields", "Field reference")}
 <p class="small muted">Every quantity a condition can test.</p>
-{fields}
+{fields}</section>
 
-<h2 id="examples">Worked examples</h2>
-{ex}
+<section id="examples">{h2("examples", "Worked examples")}
+{ex}</section>
 
-<h2 id="limits">Limits and honesty</h2>
+<section id="limits">{h2("limits", "Limits and tiers")}
 <div class="scroll"><table><thead><tr><th>Tier</th><th>History</th>
 <th class="num">Backtests</th><th class="num">Other calls</th>
 <th class="num">CPU s/h</th><th class="num">Concurrent</th>
 </tr></thead><tbody>{tiers}</tbody></table></div>
 <p class="small muted" style="margin-top:10px">Backtests and built reports spend the
 first column. Reading coverage, methodology, search or your own history spends the
-second — so checking what the data covers before you run never costs you a run.</p>
-<ul style="margin-top:16px">{honesty}</ul>
+second, so checking what the data covers before you run never costs you a run.</p></section>
+
+<section id="honesty">{h2("honesty", "How results are made")}
+<ul>{honesty}</ul></section>
 </article></div>
 """
-    return shell("Docs — Stratify", body, v["nav"], None, "docs", wide=True)
+    return shell("Docs — Stratify", body, None, None, "docs", wide=True,
+                 signed_in=bool(v.get("signed_in")),
+                 path="/docs")
 
 
 def message_page(title, message, detail=None, status_link=("/", "Back to the homepage")):
@@ -859,7 +1113,7 @@ def legal(v):
 <p>{esc(d["contact"])}</p>
 <p class="small muted"><a href="/{esc(other_key)}">{esc(other_label)}</a> ·
 <a href="/docs">Docs</a></p>
-""", v["nav"], None, v["page"])
+""", None, None, v["page"], path="/" + v["page"], signed_in=bool(v.get("signed_in")))
 
 
 def login(v):

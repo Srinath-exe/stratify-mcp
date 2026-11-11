@@ -86,8 +86,36 @@ TIERS = {
 # Tunable, because the right number depends on worker count and on how heavy the paid
 # workload actually is -- both of which are deployment facts, not constants.
 _PAID_CAP = int(os.getenv("STRATIFY_PAID_GLOBAL_CONCURRENCY", "2"))
-TIER_GLOBAL_CONCURRENCY = {"free": None, "plus": _PAID_CAP, "pro": _PAID_CAP,
+# FREE WAS None, WHICH MEANT UNCAPPED. Per-account concurrency is 2, so the service was
+# bounded only by (accounts x 2) -- 180 active free users is 360 admissible requests on a
+# box sized for about nine at once. The per-account limit stops one caller monopolising
+# the machine; it does nothing about a crowd, which is the case that actually arrives when
+# a listing goes live.
+#
+# Sized from the measured knee, not guessed. Free cold p50 is 0.428 s wall; throughput
+# peaked at concurrency 8 on 8 vCPU (18.8/s, p95 0.657 s) and past that latency grew while
+# throughput did not. At the 50 % allocation this service is now built for, that knee is
+# near 4-5, so 10 sits above it -- high enough never to refuse a real burst, low enough
+# that the box degrades into slower answers rather than into swap and timeouts.
+_FREE_CAP = int(os.getenv("STRATIFY_FREE_GLOBAL_CONCURRENCY", "10"))
+TIER_GLOBAL_CONCURRENCY = {"free": _FREE_CAP, "plus": _PAID_CAP, "pro": _PAID_CAP,
                            "bench": None}
+
+# A BURST SHOULD BE SLOWER, NOT AN ERROR. Refusing the instant a slot is busy turns a
+# half-second overlap between two users into a 429 that a model reports as a failure. So
+# admission waits briefly for a slot before refusing.
+#
+# The wait is SHORT and the number of WAITERS is bounded, because the obvious version of
+# this makes a surge worse: if every worker thread can block waiting, sustained overload
+# fills the thread pool with waiters, the queue grows without limit and every caller gets
+# a slow answer followed by a timeout. Capping waiters means the service sheds load at a
+# known point instead of collapsing, which is the whole purpose of an admission control.
+ADMISSION_WAIT_SECONDS = float(os.getenv("STRATIFY_ADMISSION_WAIT", "1.5"))
+ADMISSION_POLL_SECONDS = 0.1
+# Waiters per process. Two per expected slot: enough that a slot freed mid-wait is taken
+# immediately, not enough to turn the worker pool into a queue.
+_MAX_WAITERS = int(os.getenv("STRATIFY_ADMISSION_WAITERS", "8"))
+_waiters = threading.Semaphore(_MAX_WAITERS)
 
 SIGNUPS_PER_IP_PER_HOUR = 3
 SIGNUPS_PER_IP_PER_DAY = 10
@@ -123,8 +151,28 @@ class Concurrency:
 
     def acquire(self, account_id, limit, tier="free"):
         token = f"{os.getpid()}:{threading.get_ident()}:{time.time():.6f}"
+        tier_limit = TIER_GLOBAL_CONCURRENCY.get(tier)
         refused = store.acquire_slot(account_id, limit, token, tier=tier,
-                                     tier_limit=TIER_GLOBAL_CONCURRENCY.get(tier))
+                                     tier_limit=tier_limit)
+
+        # Brief wait before refusing, so a transient overlap costs latency and not an
+        # error. Only ever waits on a GLOBAL refusal: an "account" refusal means this
+        # caller already has its own requests running, and making it wait would hold a
+        # worker thread hostage to a client that is its own bottleneck -- it should get the
+        # 429 immediately and slow itself down.
+        if refused == "tier" and ADMISSION_WAIT_SECONDS > 0:
+            if _waiters.acquire(blocking=False):
+                try:
+                    deadline = time.time() + ADMISSION_WAIT_SECONDS
+                    while refused == "tier" and time.time() < deadline:
+                        time.sleep(ADMISSION_POLL_SECONDS)
+                        refused = store.acquire_slot(account_id, limit, token, tier=tier,
+                                                     tier_limit=tier_limit)
+                finally:
+                    _waiters.release()
+            # No waiter slot: the service is already absorbing as much burst as it will.
+            # Refuse now rather than queue behind the queue.
+
         if refused == "account":
             raise QuotaExceeded(
                 "concurrency",

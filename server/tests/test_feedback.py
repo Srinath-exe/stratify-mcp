@@ -529,8 +529,9 @@ def test_result_tools_carry_the_ui_template(client):
     by_name = {t["name"]: t for t in tools_out}
     for name in ("run_backtest", "get_backtest"):
         assert by_name[name]["_meta"]["ui"]["resourceUri"] == "ui://stratify/backtest"
-    # Tools with nothing to draw must not claim a view.
-    assert "_meta" not in by_name["describe_coverage"]
+    # Tools with nothing to draw must not claim a view. (Every tool carries _meta now, for
+    # its securitySchemes; the view is the "ui" key inside it.)
+    assert "ui" not in by_name["describe_coverage"].get("_meta", {})
 
 
 def test_the_apps_extension_is_declared(client):

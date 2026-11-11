@@ -83,7 +83,7 @@ def _daily_cached(entry_minute, ch_user):
                countIf(mod_ <= %(m)s)                    AS part_bars
         FROM ( SELECT timestamp, open, high, low, close,
                       toHour(timestamp) * 60 + toMinute(timestamp) AS mod_
-               FROM {db.DATABASE}.spot_1min )
+               FROM {db.database()}.spot_1min )
         GROUP BY date ORDER BY date
         """,
         {"m": entry_minute})

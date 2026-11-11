@@ -248,6 +248,55 @@ MIGRATIONS = [
     # was already enforced.
     ("usage", "billable",
      "ALTER TABLE usage ADD COLUMN billable INTEGER NOT NULL DEFAULT 1"),
+    # WHO OWNS A RESULT, stored directly instead of inferred from its key.
+    #
+    # A result recorded only the key_id that made it, and ownership was recovered with
+    # key_owner(), which looks the key up in api_keys. Under OAuth there is no such row:
+    # authenticate_oauth() synthesises key_id = "oauth:<client_id>" so that quota and
+    # audit can treat both auth kinds alike. key_owner() then returned None for every
+    # OAuth-created backtest, and build_report refused its own account's work with "No
+    # backtest on this account" -- while get_backtest, which matches on key_id, found it
+    # fine. Every reviewer connecting over OAuth hit it, on every report.
+    #
+    # Backfilled below for rows made with a real key; rows whose key has since been
+    # revoked and deleted keep an empty owner and stay reachable by key_id alone.
+    ("results", "account_id",
+     "ALTER TABLE results ADD COLUMN account_id TEXT NOT NULL DEFAULT ''"),
+]
+
+# Fill in the owner for results written before the column existed. Cheap, idempotent, and
+# it only touches rows that are still empty.
+BACKFILL = [
+    "UPDATE results SET account_id = (SELECT account_id FROM api_keys k "
+    "WHERE k.key_id = results.key_id) "
+    "WHERE (account_id IS NULL OR account_id = '') "
+    "AND EXISTS (SELECT 1 FROM api_keys k WHERE k.key_id = results.key_id)",
+
+    # OAUTH-CREATED ROWS, attributed BY TIME rather than by client.
+    #
+    # An OAuth session's key_id is "oauth:<client_id>", and the obvious repair -- map
+    # client_id to account_id through oauth_tokens -- is unsafe, because a client_id is
+    # not one account. ChatGPT's registered client is shared: two accounts here have held
+    # tokens against the same one, so resolving by client alone would have handed one
+    # account's backtests to the other. That is a cross-account disclosure, and the bug
+    # it was fixing is cosmetic by comparison.
+    #
+    # A result IS attributable by when it was made: it was created while some account
+    # held a live access token for that client. The two windows in this database do not
+    # overlap, and where they ever did the row is left alone -- the count(DISTINCT) = 1
+    # clause is the safety property, not an optimisation. An unattributed row is a row
+    # missing from one listing; a misattributed row is someone else's data.
+    "UPDATE results SET account_id = ("
+    "  SELECT t.account_id FROM oauth_tokens t"
+    "  WHERE 'oauth:' || t.client_id = results.key_id AND t.kind = 'access'"
+    "    AND t.created_at <= results.created_at"
+    "    AND results.created_at <= t.expires_at LIMIT 1) "
+    "WHERE (account_id IS NULL OR account_id = '') "
+    "AND key_id LIKE 'oauth:%' "
+    "AND (SELECT count(DISTINCT t.account_id) FROM oauth_tokens t"
+    "     WHERE 'oauth:' || t.client_id = results.key_id AND t.kind = 'access'"
+    "       AND t.created_at <= results.created_at"
+    "       AND results.created_at <= t.expires_at) = 1",
 ]
 
 # Indexes that depend on a migrated column. They cannot live in SCHEMA: executescript runs
@@ -256,6 +305,7 @@ MIGRATIONS = [
 POST_MIGRATION = [
     "CREATE UNIQUE INDEX IF NOT EXISTS ix_accounts_google ON accounts(google_sub) "
     "WHERE google_sub IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS ix_results_account ON results(account_id, created_at)",
     "CREATE INDEX IF NOT EXISTS ix_usage ON usage(account_id, ts)",
     "CREATE INDEX IF NOT EXISTS ix_inflight_tier ON inflight(tier)",
     "CREATE INDEX IF NOT EXISTS ix_accounts_session ON accounts(session_token)",
@@ -276,6 +326,20 @@ def _migrate(con):
             con.execute(ddl)
     for ddl in POST_MIGRATION:
         con.execute(ddl)
+    # Owner backfill. Runs after the column exists and after the index, touches only rows
+    # that are still empty, and is a no-op on every connection after the first.
+    for ddl in BACKFILL:
+        con.execute(ddl)
+    # COMMIT, OR EVERY CONNECTION IS BORN MID-TRANSACTION. BACKFILL is UPDATE, and under
+    # sqlite3's legacy isolation_level the module opens a transaction before DML and does
+    # not close it. connect() then handed back a connection with in_transaction already
+    # true, so health_probe()'s `BEGIN IMMEDIATE` answered "cannot start a transaction
+    # within a transaction" and /readyz served 503 from 2026-09-25 09:25 onward -- the
+    # watchdog alerted for a month about a database that was in fact perfectly writable.
+    # It is also a write lock held by every connection from the moment it opens, which
+    # serialises readers against each other for no reason. Committing here is correct on
+    # its own terms as well: a migration that is not committed is not a migration.
+    con.commit()
 
 
 def connect():
@@ -916,15 +980,28 @@ def active_slots(account_id):
 # ---------------------------------------------------------------- results
 
 def save_result(key_id, spec_json, spec_hash, payload_json, now=None,
-                methodology_json=None):
+                methodology_json=None, account_id=None):
     backtest_id = "bt_" + secrets.token_hex(10)
     token = secrets.token_urlsafe(24)
+    # The owner is written down rather than left to be inferred from the key, because an
+    # OAuth session has no api_keys row to infer it from. Callers pass it; the fallback is
+    # only for a caller that forgot, and it cannot resolve an OAuth key_id -- which is
+    # exactly how 16 rows ended up unattributed and invisible to their own account's
+    # listing.
+    if account_id is None:
+        account_id = key_owner(key_id) or ""
+    if not account_id and str(key_id).startswith("oauth:"):
+        import logging
+        logging.getLogger(__name__).warning(
+            "save_result: OAuth call stored a result with no account_id (key_id=%s); "
+            "it will not appear in that account's list_backtests", key_id)
     con = connect()
     with con:
-        con.execute("INSERT INTO results (backtest_id, key_id, created_at, spec_json, "
-                    "spec_hash, payload_json, report_token, methodology_json) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
-                    (backtest_id, key_id, now if now is not None else time.time(),
+        con.execute("INSERT INTO results (backtest_id, key_id, account_id, created_at, "
+                    "spec_json, spec_hash, payload_json, report_token, methodology_json) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (backtest_id, key_id, account_id,
+                     now if now is not None else time.time(),
                      spec_json, spec_hash, payload_json, token, methodology_json))
     con.close()
     return backtest_id, token
@@ -939,6 +1016,52 @@ def get_result(backtest_id, key_id=None):
                           (backtest_id, key_id)).fetchone()
     con.close()
     return row
+
+
+def result_for_account(backtest_id, account_id, key_id=None):
+    """One backtest, resolved the same way for every tool and both auth kinds.
+
+    Matches on the stored owner first, and falls back to the key that made it so that a
+    row written before the account_id column -- or by a key that has since been deleted --
+    is still reachable by the session that created it. get_backtest and build_report both
+    come through here; when they resolved ownership differently, one of them found a
+    backtest the other denied existed.
+    """
+    con = connect()
+    row = None
+    if account_id:
+        row = con.execute("SELECT * FROM results WHERE backtest_id=? AND account_id=?",
+                          (backtest_id, account_id)).fetchone()
+    if row is None and key_id:
+        row = con.execute("SELECT * FROM results WHERE backtest_id=? AND key_id=?",
+                          (backtest_id, key_id)).fetchone()
+    if row is None and account_id:
+        # Legacy rows with no owner recorded: accept them only when the key that wrote
+        # them still belongs to this account.
+        row = con.execute(
+            "SELECT r.* FROM results r JOIN api_keys k ON k.key_id = r.key_id "
+            "WHERE r.backtest_id=? AND k.account_id=? "
+            "AND (r.account_id IS NULL OR r.account_id='')",
+            (backtest_id, account_id)).fetchone()
+    con.close()
+    return row
+
+
+def recent_results_for_owner(account_id, key_id=None, limit=10):
+    """The account's backtests, newest first.
+
+    Separate from recent_results(key_id), which is scoped to a single key and is what the
+    dashboard uses. This one answers "my last backtest" for a person who may have more
+    than one key, or an OAuth session with none.
+    """
+    con = connect()
+    rows = con.execute(
+        "SELECT backtest_id, created_at, spec_json, payload_json, report_token "
+        "FROM results WHERE account_id=? OR (?<>'' AND key_id=?) "
+        "ORDER BY created_at DESC LIMIT ?",
+        (account_id or "", key_id or "", key_id or "", int(limit))).fetchall()
+    con.close()
+    return rows
 
 
 def get_result_by_token(token):

@@ -46,10 +46,7 @@ def levels_for(spec, entry_credit, width_pts):
     p = spec.params
     s = spec.structure
     sl, tp = NO_STOP, NO_TARGET
-    if s == "short_strangle":
-        if p.get("sl_mult") is not None:
-            sl = -entry_credit * (1 + float(p["sl_mult"]))
-    elif s == "credit_spread":
+    if s in ("short_strangle", "credit_spread"):
         if p.get("sl_mult") is not None:
             sl = -entry_credit * (1 + float(p["sl_mult"]))
         if p.get("tp_pct") is not None:

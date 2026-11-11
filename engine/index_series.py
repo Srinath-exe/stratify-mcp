@@ -19,7 +19,7 @@ def daily(date_from, date_to):
     rows = db.rows(
         f"SELECT toDate(timestamp) d, argMin(open, timestamp) o, max(high) h, "
         f"min(low) l, argMax(close, timestamp) c "
-        f"FROM {db.DATABASE}.spot_1min "
+        f"FROM {db.database()}.spot_1min "
         f"WHERE timestamp >= %(a)s AND timestamp < addDays(toDate(%(b)s), 1) "
         f"GROUP BY d ORDER BY d LIMIT {MAX_BARS}",
         {"a": f"{date_from} 00:00:00", "b": str(date_to)})

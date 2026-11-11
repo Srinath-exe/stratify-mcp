@@ -12,6 +12,38 @@ import clickhouse_connect
 
 DATABASE = os.getenv("STRATIFY_DB", "stratify")
 
+# ONE SERVING DATABASE PER SYMBOL. Every query in this engine reads `{db.database()}.x`,
+# so a second symbol costs one binding at the edge instead of a `symbol` predicate at 32
+# call sites -- and ClickHouse cannot prepend a column to an existing ORDER BY, so the
+# column alternative meant rebuilding 289 M NIFTY rows on a live service.
+SYMBOL_DB = {
+    "NIFTY":  DATABASE,
+    "SENSEX": os.getenv("STRATIFY_DB_SENSEX", "stratify_sensex"),
+}
+current_db = contextvars.ContextVar("clickhouse_database", default=DATABASE)
+
+
+def use_symbol(symbol):
+    """Bind this request to the serving database for `symbol`. Returns the reset token.
+
+    BOUND FROM THE SPEC IN backtest.run(), not by each caller. The sibling mechanism
+    use_tier() is a caller's responsibility and that is exactly its defect: a path that
+    forgets it reads the free window and says nothing, so a paid spec silently returns one
+    year (measured: 50 trades where 383 were asked for). A forgotten use_symbol() would be
+    worse -- a SENSEX spec served from NIFTY data, with every number plausible and wrong.
+    So the binding lives at the one place that always has the symbol.
+    """
+    db = SYMBOL_DB.get(symbol)
+    if db is None:
+        raise KeyError(f"no serving database configured for symbol {symbol!r}; "
+                       f"known: {sorted(SYMBOL_DB)}")
+    return current_db.set(db)
+
+
+def database():
+    """The serving database for the symbol bound to this request."""
+    return current_db.get()
+
 # Which ClickHouse user this request runs as. The tier boundary is enforced by a row
 # policy and a settings profile attached to these users, so connecting as the wrong one is
 # the only way a free key could see paid data -- and it is set once, at the edge, from the

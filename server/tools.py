@@ -9,6 +9,7 @@ characters, so the first sentence carries the meaning.
 ChatGPT's deep research requires (decision F4). They open a channel we would otherwise be
 excluded from and cost almost nothing.
 """
+import datetime as dt
 import hashlib
 import json
 import time
@@ -37,8 +38,16 @@ SPEC_SCHEMA = {
     "properties": {
         "structure": {"type": "string", "enum": sorted(spec_mod.STRUCTURE_PARAMS),
                       "description": "Option structure to trade."},
-        "symbol": {"type": "string", "enum": ["NIFTY"],
-                   "description": "Free tier serves NIFTY only."},
+        # THE ENUM IS THE ONLY WAY A CLIENT LEARNS A SYMBOL EXISTS. It read ["NIFTY"]
+        # after SENSEX went live in the engine, so no model would ever send SENSEX and a
+        # client validating against this schema would reject it if one tried -- a shipped
+        # feature that was unreachable. Read from spec_mod so the two cannot diverge.
+        "symbol": {"type": "string", "enum": list(spec_mod.SYMBOLS),
+                   "description": ("Index to trade. NIFTY has the longer history; "
+                                   "SENSEX options begin 2023-08-07 and trade on a "
+                                   "100-point strike grid against NIFTY's 50. "
+                                   "describe_coverage gives the served window per "
+                                   "symbol.")},
         "params": {
             "type": "object",
             "description": ("Structure parameters. pct_offset and pct_width are percent "
@@ -133,14 +142,14 @@ _LEG = {"type": "object", "required": ["side", "type", "strike"],
 STRATEGY_SCHEMA = {
     "type": "object", "required": ["legs"], "additionalProperties": False,
     "description": (
-        "An open strategy: any legs, any rules. Use this whenever the idea does not fit a "
-        "preset — ratio spreads, calendars, diagonals, jade lizards, broken wings, "
+        "An open strategy: any legs, any rules. Covers what the presets cannot say — "
+        "ratio spreads, calendars, diagonals, jade lizards, broken wings, "
         "delta- or premium-selected strikes, per-leg stops, rolling a tested side, "
         "trailing stops, entry conditions on the credit available, and book-level rules "
         "like standing down after three losers."),
     "properties": {
         "name": {"type": "string"},
-        "symbol": {"type": "string", "enum": ["NIFTY"]},
+        "symbol": {"type": "string", "enum": list(spec_mod.SYMBOLS)},
         "legs": {"type": "array", "minItems": 1, "maxItems": 12, "items": _LEG,
                  "description": "What to open. Leg order defines the indices rules use."},
         "entry": {"type": "object", "additionalProperties": False, "properties": {
@@ -220,8 +229,13 @@ EITHER_SPEC = {"description":
 TOOLS = [
     {
         "name": "run_backtest",
-        # Reads market data and returns a result. It stores that result under the caller's own account so the id and report link keep resolving, which is bookkeeping for the caller, not a change to anything the caller owns elsewhere.
-        "annotations": {"title": 'Run a backtest', "readOnlyHint": True,
+        # NOT read-only. It writes: the result is stored under the caller's account so
+        # the id and the report link keep resolving, and a result that clears the
+        # evidence bar is added to that account's strategy book. That is additive
+        # bookkeeping and nothing is replaced or removed, so destructiveHint stays false
+        # -- but calling it read-only understated what the call does, and an app review
+        # is right to read readOnlyHint as "changes nothing at all".
+        "annotations": {"title": 'Run a backtest', "readOnlyHint": False,
                         "destructiveHint": False, "openWorldHint": False},
         "description": (
             "Backtest an Indian index option strategy on real 1-minute NIFTY options data. "
@@ -266,7 +280,7 @@ TOOLS = [
                         "destructiveHint": False, "openWorldHint": False},
         "description": (
             "What data is available: symbols, date range, resolution, structures, gates, "
-            "biases, the cost model, and every known gap. Call this before building a spec."),
+            "biases, the cost model, and every known gap."),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
@@ -275,14 +289,30 @@ TOOLS = [
         "annotations": {"title": 'How a result is produced', "readOnlyHint": True,
                         "destructiveHint": False, "openWorldHint": False},
         "description": (
-            "How a result is produced and how to judge it: entry pricing, settlement, "
-            "margin, slippage, the honesty rubric, and what each check can and cannot "
-            "prove. Read this before trusting any backtest, including ours."),
+            "How a result is produced: entry pricing, settlement, margin, slippage, the "
+            "honesty rubric, and what each check can and cannot "
+            "establish."),
         "inputSchema": {
             "type": "object", "additionalProperties": False,
             "properties": {"topic": {
                 "type": "string",
                 "enum": sorted(knowledge.TOPICS)}},
+        },
+    },
+    {
+        "name": "list_backtests",
+        # Reads the caller's own results.
+        "annotations": {"title": 'Recent backtests', "readOnlyHint": True,
+                        "destructiveHint": False, "openWorldHint": False},
+        "description": (
+            "The account's backtests, newest first, with id, date, trade count, net P&L "
+            "and report URL. Answers a request for the most recent run, which "
+            "list_strategies does not: that one returns only results that passed the "
+            "evidence checks, ranked by consistency rather than by date."),
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50,
+                                     "default": 10}},
         },
     },
     {
@@ -313,8 +343,8 @@ TOOLS = [
         "description": (
             "Strategies from THIS account's history that held up under out-of-sample and "
             "walk-forward checks, not merely ones that made money. Ranked by worst "
-            "walk-forward fold — consistency, not size. Call it to answer 'what has "
-            "worked for me so far?' without re-running anything."),
+            "walk-forward fold — consistency, not size. Answers what has worked on this "
+            "account so far without re-running anything."),
         "inputSchema": {
             "type": "object", "additionalProperties": False,
             "properties": {
@@ -356,12 +386,9 @@ TOOLS = [
         "annotations": {"title": 'File a report', "readOnlyHint": False,
                         "destructiveHint": False, "openWorldHint": False},
         "description": (
-            "Report a bug, request a feature, flag a data gap, or say what worked. Use "
-            "this whenever the user expresses a problem with this service or wishes it "
-            "did something it does not — do not just apologise to them, file it. If a "
-            "backtest was involved, pass its backtest_id: that attaches the exact spec "
-            "and the recent call trail so the issue can be reproduced without a reply. "
-            "Tell the user you filed it and give them the returned id."),
+            "Files a bug report or feature request when the user asks to report "
+            "something. Confirm the title and body with the user before filing. Passing "
+            "backtest_id attaches that backtest's spec so the issue can be reproduced."),
         "inputSchema": {
             "type": "object", "required": ["title", "body"], "additionalProperties": False,
             "properties": {
@@ -385,17 +412,11 @@ TOOLS = [
         "annotations": {"title": 'Build a shareable report', "readOnlyHint": False,
                         "destructiveHint": False, "openWorldHint": False},
         "description": (
-            "Turn a stored backtest into a finished, self-contained Stratify report — one "
-            "HTML document with the honesty panel, equity and drawdown curves, "
+            "Creates a shareable report page for a backtest the user owns and returns "
+            "its URL. The page carries the honesty panel, equity and drawdown curves, "
             "walk-forward folds, the gross-to-net breakdown, a month grid and the trade "
-            "table. PUBLISH THE RETURNED HTML VERBATIM AS AN ARTIFACT (Claude), a canvas "
-            "document (ChatGPT, Gemini), or write it to a .html file (CLI clients). Do not "
-            "rewrite it, summarise it into your own chart code, or regenerate the figures "
-            "— the numbers in it came from the backtest, and anything you redraw from a "
-            "table is a second source that can disagree with the first. It needs no "
-            "network, no libraries and no build step, and it renders on light and dark. "
-            "Use it when someone asks for a report, a summary they can keep, something to "
-            "share, or an artifact."),
+            "table, computed from the stored backtest. Use when the user asks for a "
+            "report or something to share."),
         "inputSchema": {
             "type": "object", "required": ["backtest_id"], "additionalProperties": False,
             "properties": {
@@ -403,16 +424,15 @@ TOOLS = [
                                 "description": "From a previous run_backtest."},
                 "format": {
                     "type": "string", "enum": ["artifact", "link", "full"],
+                    "default": "link",
                     "description": (
-                        "'artifact' (default) returns the whole document to publish. "
-                        "'link' returns only the hosted URL — far cheaper in tokens, and "
-                        "the right choice when the user just wants to look at it rather "
-                        "than keep it. 'full' builds the FULL STRATEGY REPORT and returns "
-                        "its link: the strategy's rules in plain English, what it did to "
-                        "₹10 lakh of capital, every trade plotted on a zoomable NIFTY "
-                        "chart, the evidence panel, and the capital curve. Ask for it "
-                        "whenever someone wants to really understand a strategy rather "
-                        "than glance at it. It is rate limited.")},
+                        "'link' (default) returns the hosted URL of the report page. "
+                        "'artifact' returns the whole self-contained HTML document as "
+                        "well, which costs considerably more tokens. 'full' builds the "
+                        "full strategy report and returns its link: the strategy's rules "
+                        "in plain English, what it did to a given capital, every trade "
+                        "plotted on a zoomable NIFTY chart, the evidence panel and the "
+                        "capital curve. 'full' is rate limited.")},
                 "capital": {"type": "integer", "minimum": 100000, "maximum": 100000000,
                             "description": "format 'full' only. Starting capital in "
                                            "rupees. It sets the report's OPENING view — "
@@ -449,6 +469,86 @@ TOOLS = [
 class ToolError(Exception):
     """A refusal the user can act on. Always carries a reason."""
 
+
+
+
+# ---------------------------------------------------------------- auth declaration
+#
+# WHAT AUTH EACH TOOL TAKES, stated on the tool.
+#
+# KEPT DELIBERATELY MINIMAL. The first version declared two schemes and described them:
+# an oauth2 entry carrying `authorization_servers` and `description`, plus an `apiKey`
+# entry for the header route. ChatGPT's tool scan then failed with "Internal service
+# error" -- it accepts only `noauth` and `oauth2`, and the extra entry and the
+# non-standard fields were enough to break it. A declaration that stops a client reading
+# the tool list is worse than no declaration.
+#
+# This is a DECLARATION and not a change of behaviour. An API key in a header still
+# works at runtime, and tools/list still answers unauthenticated -- several clients
+# enumerate before they authenticate, and an empty tool list is indistinguishable from a
+# broken server. Neither is withdrawn by declaring only OAuth here.
+SECURITY_SCHEMES = [{"type": "oauth2", "scopes": ["mcp"]}]
+
+for _t in TOOLS:
+    _meta = _t.setdefault("_meta", {})
+    _meta["securitySchemes"] = SECURITY_SCHEMES
+
+# ---------------------------------------------------------------- output schemas
+#
+# One per tool, because the app-submission form asks for every tool to declare what it
+# returns. They are DELIBERATELY OPEN at the edges: a backtest payload carries different
+# keys at detail='summary' than at 'full', and a schema that closed the object would
+# either be a lie or force every future field through a schema change. What is listed is
+# what a caller can rely on being present; additionalProperties stays true for the rest.
+
+_OBJ = {"type": "object", "additionalProperties": True}
+
+
+def _out(**props):
+    return {"type": "object", "additionalProperties": True, "properties": props}
+
+
+_STR = {"type": "string"}
+_NUM = {"type": "number"}
+_INT = {"type": "integer"}
+_ARR = {"type": "array", "items": _OBJ}
+
+OUTPUT_SCHEMAS = {
+    "run_backtest": _out(
+        backtest_id=_STR, report_url=_STR,
+        spec=_OBJ, summary=_OBJ, honesty=_OBJ, interpretation=_OBJ,
+        methodology=_OBJ, equity_curve={"type": "array"}, breakdown=_OBJ,
+        trades=_ARR, trade_detail=_OBJ, data_release=_OBJ, quota=_OBJ,
+        strategy_book=_OBJ, cost_seconds=_NUM),
+    "describe_coverage": _out(
+        symbol=_STR, resolution=_STR, tier=_STR, **{"from": _STR}),
+    "explain_methodology": _out(topic=_STR, title=_STR, body=_STR,
+                                topics={"type": "array", "items": _STR}),
+    "list_backtests": _out(
+        backtests={"type": "array", "items": _out(
+            backtest_id=_STR, created_at=_STR, name=_STR, n_trades=_INT,
+            net_pnl_rupees=_NUM, report_url=_STR)},
+        count=_INT, note=_STR),
+    "get_backtest": _out(
+        backtest_id=_STR, report_url=_STR, spec=_OBJ, summary=_OBJ, honesty=_OBJ,
+        trades=_ARR, trade_detail=_OBJ, data_release=_OBJ, detail_note=_STR),
+    "list_strategies": _out(
+        strategies={"type": "array", "items": _OBJ}, count=_INT, note=_STR),
+    "search": _out(results={"type": "array", "items": _out(
+        id=_STR, title=_STR, url=_STR)}),
+    "fetch": _out(id=_STR, title=_STR, text=_STR, url=_STR, metadata=_OBJ),
+    "submit_feedback": _out(feedback_id=_STR, status=_STR, category=_STR,
+                            severity=_STR, message=_STR, note=_STR),
+    "build_report": _out(backtest_id=_STR, report_url=_STR, mime_type=_STR,
+                         document=_STR, bytes=_INT, contains=_OBJ,
+                         document_properties=_OBJ, message=_STR),
+    "my_feedback": _out(items={"type": "array", "items": _OBJ}, count=_INT),
+}
+
+for _t in TOOLS:
+    _schema = OUTPUT_SCHEMAS.get(_t["name"])
+    if _schema is not None:
+        _t["outputSchema"] = _schema
 
 def _spec_hash(spec):
     if hasattr(spec, "legs"):
@@ -562,7 +662,8 @@ def run_backtest(arguments, context):
     spec_hash = _spec_hash(parsed)
     backtest_id, token = store.save_result(
         context["key_id"], json.dumps(raw), spec_hash, json.dumps(payload, default=str),
-        methodology_json=json.dumps(payload["methodology"]))
+        methodology_json=json.dumps(payload["methodology"]),
+        account_id=context.get("account_id"))
     payload["backtest_id"] = backtest_id
     payload["report_url"] = f"{context['base_url']}/r/{token}"
     payload["report_note"] = (
@@ -619,7 +720,7 @@ def _trim(payload, level, keep=None):
                                    note="detail='summary' returned no prices at all")
         out["detail_note"] = (
             "detail='summary': aggregates only. Call again with detail='standard' for the "
-            "equity curve and per-trade rows, or open report_url, which always has them.")
+            "equity curve and per-trade rows, or open report_url, which has them.")
         return out
     keep = STANDARD_TRADES if keep is None else keep
     trades = payload.get("trades") or []
@@ -670,8 +771,7 @@ def _attached(payload):
     else:
         parts.append("NO per-trade rows - this response was summary-level "
                      "(re-run with detail='standard' or 'full' for them)")
-    return ("ATTACHED in structuredContent: " + ", ".join(parts) +
-            ". Read it for a specific number. Do not transcribe it.")
+    return "ATTACHED in structuredContent: " + ", ".join(parts) + "."
 
 
 def digest(payload):
@@ -703,7 +803,11 @@ def digest(payload):
     rom = s.get("mean_return_on_margin")
 
     lines = [
-        f"{spec.get('structure', '?')} on NIFTY weeklies, "
+        # THE SYMBOL COMES FROM THE SPEC. This said "NIFTY" literally, so the first live
+        # SENSEX backtest returned correct SENSEX numbers under a NIFTY headline -- and
+        # that headline is what a model reads back to the user and what a shared report
+        # shows. Wrong label on right data is worse than an error.
+        f"{spec.get('structure', '?')} on {spec.get('symbol', 'NIFTY')} weeklies, "
         f"{(s.get('period') or {}).get('from', '?')} to {(s.get('period') or {}).get('to', '?')}",
         f"VERDICT {h.get('verdict', '?')} - health {h.get('health_score', '?')}/100",
         "",
@@ -753,23 +857,21 @@ def digest(payload):
         # promised, found less, and filed a bug was entirely right to.
         _attached(payload),
         "",
-        "HOW TO ANSWER: lead with the verdict and the one number that decides it, in a few "
-        "sentences. Do not reproduce the tables, the equity curve or the trade list as "
-        "text - that is what the report is for.",
-        # The URL is stated FIRST and unconditionally, because it works in every client
-        # with no tool call at all. build_report is mentioned second and hedged: a client
-        # that connected before the tool existed has a cached list without it, and
-        # advertising a tool the caller cannot see is worse than not advertising one.
+        # The URL is stated first and unconditionally, because it works in every client
+        # with no tool call at all.
+        #
+        # What used to sit here was a block headed "HOW TO ANSWER" and "DEFAULT
+        # BEHAVIOUR: publish the report rather than describing it. Do not ask first."
+        # That is a tool result telling the assistant how to talk to its user and what to
+        # publish without consent, and it is part of why this server was rejected from an
+        # app directory. A result describes what it contains; what to do with it is the
+        # assistant's decision and the user's.
         f"REPORT: {payload.get('report_url', '')}",
-        "  That link renders this exact result and needs no further call. Give it to the "
-        "user.",
-        "  DEFAULT BEHAVIOUR: publish the report rather than describing it. Do not ask "
-        "first. Hold off only while sweeping variants, then publish once for the keeper.",
-        f"  If your client lists a tool called build_report, calling it with backtest_id "
-        f"{payload.get('backtest_id', '')} returns the same report as one self-contained "
-        "HTML document to publish as an artifact the user can keep and share -- offer "
-        "that too. If it is not in your tool list, your connection predates it: the link "
-        "above still works, and reconnecting the connector will pick the tool up.",
+        "  A shareable page rendering this exact result: equity curve, honesty panel and "
+        "trade table. It needs no further call.",
+        f"  build_report with backtest_id {payload.get('backtest_id', '')} returns the "
+        "same page's URL, and can also return the page as one self-contained HTML "
+        "document.",
     ]
     return "\n".join(l for l in lines if l is not None)
 
@@ -839,21 +941,56 @@ def describe_coverage(arguments, context):
 
 
 def _coverage(tier):
-    win_from, win_to = spec_mod.window_for(tier)
+    """Coverage for every symbol this tier serves.
+
+    `symbols` is the field a caller should read. `symbol` and the flat date fields are
+    kept, pinned to NIFTY, because they are the published v1 contract and a connected
+    client reading `coverage["from"]` must not start getting SENSEX's 2023 start date --
+    that would silently move the window under strategies already written against it.
+    """
+    per_symbol = {}
+    for sym in spec_mod.SYMBOLS:
+        tok = engine_db.use_symbol(sym)
+        try:
+            per_symbol[sym] = _coverage_one(tier, sym)
+        except Exception as exc:                                   # noqa: BLE001
+            # A symbol whose serving database is absent or mid-rebuild must not take the
+            # whole coverage call down -- the other symbol is still perfectly serveable,
+            # and a caller that cannot read coverage cannot do anything at all.
+            per_symbol[sym] = {"symbol": sym, "available": False,
+                               "reason": f"{type(exc).__name__}: {exc}"[:200]}
+        finally:
+            engine_db.current_db.reset(tok)
+
+    base = dict(per_symbol.get("NIFTY") or {})
+    base["symbols"] = per_symbol
+    base["served_symbols"] = [k for k, v in per_symbol.items()
+                              if v.get("available", True)]
+    return {**base, **_coverage_static(tier)}
+
+
+def _coverage_one(tier, symbol):
+    win_from, win_to = spec_mod.window_for(tier, symbol)
     coverage = engine_db.rows(
         f"SELECT min(trade_date) AS d0, max(trade_date) AS d1, "
         f"uniqExact(trade_date) AS days, uniqExact(expiry_date) AS expiries, "
-        f"uniqExact(strike_price) AS strikes FROM {engine_db.DATABASE}.contract_day "
+        f"uniqExact(strike_price) AS strikes FROM {engine_db.database()}.contract_day "
         f"WHERE trade_date BETWEEN %(a)s AND %(b)s",
         {"a": win_from, "b": win_to})[0]
+    # Bounded to the standard strike grid, the same way the engine resolves a spec. The
+    # long-dated NIFTY series sits in this table on a 500 or 1000-point grid, and two of
+    # those expiries fell inside the window carrying a measured lot size of 50 — so the
+    # published coverage listed three lot sizes, overlapping, where the market had two.
     lots = engine_db.rows(
         f"SELECT lot_size, min(expiry_date) AS first, max(expiry_date) AS last "
-        f"FROM {engine_db.DATABASE}.contract_spec "
-        f"WHERE expiry_date BETWEEN %(a)s AND %(b)s "
+        f"FROM {engine_db.database()}.contract_spec "
+        f"WHERE expiry_date BETWEEN %(a)s AND %(b)s AND strike_step = %(step)s "
         f"GROUP BY lot_size ORDER BY first",
-        {"a": win_from, "b": win_to})
+        {"a": win_from, "b": win_to,
+         "step": contracts.standard_strike_step(symbol)})
     return {
-        "symbol": "NIFTY",
+        "symbol": symbol,
+        "available": True,
         "resolution": "1-minute",
         "tier": tier,
         # Published so a caller holding an older result can see the methodology moved,
@@ -865,6 +1002,14 @@ def _coverage(tier):
         "tier_window": {"from": str(win_from), "to": str(win_to)},
         "trading_days": coverage["days"], "expiries": coverage["expiries"],
         "strikes": coverage["strikes"],
+        "lot_sizes": [{"lot_size": r["lot_size"], "from": str(r["first"]),
+                       "to": str(r["last"])} for r in lots],
+    }
+
+
+def _coverage_static(tier):
+    """The parts that do not vary by symbol: structures, gates, times, cadences."""
+    return {
         "structures": {k: {"required": sorted(v["required"]),
                            "optional": sorted(v["optional"])}
                        for k, v in spec_mod.STRUCTURE_PARAMS.items()},
@@ -895,8 +1040,9 @@ def _coverage(tier):
             "never": ("the chain: no strike a strategy did not trade, no minute it did not "
                       "trade at, no range, no scan, no export"),
         },
-        "lot_sizes": [{"lot_size": r["lot_size"], "first_expiry": str(r["first"]),
-                       "last_expiry": str(r["last"])} for r in lots],
+        # lot_sizes moved into the per-symbol block: NIFTY's five lot regimes and
+        # SENSEX's two are different facts about different contracts, and publishing them
+        # in one flat list was already producing overlapping ranges for one symbol.
         "withheld": {
             "debit_spread": ("withheld from v1: a live SPAN margin check found a "
                              "margin-sizing bug that produced implausible returns"),
@@ -929,10 +1075,57 @@ def explain_methodology(arguments, context):
             "all_topics": sorted(METHODOLOGY)}
 
 
+
+def list_backtests(arguments, context):
+    """The account's backtests, newest first.
+
+    "Pull up my last backtest" had no route. get_backtest needs an id the user does not
+    have, and list_strategies answers a different question on purpose -- it returns only
+    what cleared the evidence bar, ranked by worst walk-forward fold, so the most recent
+    run is usually absent from it and never first.
+    """
+    limit = arguments.get("limit", 10)
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 50:
+        raise ToolError("limit must be a whole number from 1 to 50")
+    rows = store.recent_results_for_owner(context.get("account_id"),
+                                          context.get("key_id"), limit)
+    out = []
+    for r in rows:
+        payload = {}
+        try:
+            payload = json.loads(r["payload_json"]) or {}
+        except (TypeError, ValueError):
+            payload = {}
+        summary = payload.get("summary") or {}
+        spec = {}
+        try:
+            spec = json.loads(r["spec_json"]) or {}
+        except (TypeError, ValueError):
+            spec = {}
+        out.append({
+            "backtest_id": r["backtest_id"],
+            "created_at": dt.datetime.fromtimestamp(
+                r["created_at"], dt.timezone.utc).isoformat(timespec="seconds"),
+            "name": spec.get("name") or summary.get("structure")
+            or (spec.get("structure") if isinstance(spec, dict) else None),
+            "n_trades": summary.get("n_trades"),
+            "net_pnl_rupees": summary.get("total_pnl_rupees"),
+            "report_url": f"{context['base_url']}/r/{r['report_token']}",
+        })
+    return {
+        "backtests": out,
+        "count": len(out),
+        "note": ("Newest first, whatever the result. list_strategies is the filtered "
+                 "view: only what passed the out-of-sample and walk-forward checks, "
+                 "ranked by worst fold."),
+    }
+
+
 def get_backtest(arguments, context):
-    row = store.get_result(arguments["backtest_id"], key_id=context["key_id"])
+    row = store.result_for_account(arguments["backtest_id"], context.get("account_id"),
+                                   context.get("key_id"))
     if row is None:
-        raise ToolError(f"no backtest {arguments['backtest_id']!r} on this key")
+        raise ToolError(f"no backtest {arguments['backtest_id']!r} on this account")
     payload = json.loads(row["payload_json"])
     payload["backtest_id"] = row["backtest_id"]
     payload["report_url"] = f"{context['base_url']}/r/{row['report_token']}"
@@ -977,7 +1170,13 @@ def search(arguments, context):
 
 
 def fetch(arguments, context):
-    ident = arguments["id"]
+    # A missing or empty id was a KeyError -> "internal error" (QA, 11 Nov 2026). Models
+    # often pass the backtest's own field name, so that is accepted as well.
+    ident = arguments.get("id") or arguments.get("backtest_id")
+    if not isinstance(ident, str) or not ident.strip():
+        raise ToolError("fetch needs an `id`: a backtest id (bt_...) or a document id "
+                        "(doc:...) exactly as search returned it")
+    ident = ident.strip()
     if ident == "doc:coverage":
         return describe_coverage({}, context)
     if ident.startswith("doc:"):
@@ -1050,11 +1249,9 @@ def submit_feedback(arguments, context):
         "is_new": result["is_new"],
         "message": (
             f"{filed} Reference {result['feedback_id']}. It was categorised as "
-            f"'{result['category']}' at severity '{result['severity']}'. The spec and your "
-            f"recent calls were attached automatically, so no further detail is needed "
-            f"unless you have some. Ask with my_feedback to see where it stands."),
-        "tell_the_user": ("Give them the feedback_id. Do not promise a timeline — this "
-                          "files a report, it does not schedule a fix."),
+            f"'{result['category']}' at severity '{result['severity']}'. my_feedback "
+            f"reports where it stands."),
+        "note": ("Filing a report does not schedule a fix and carries no timeline."),
     }
 
 
@@ -1187,18 +1384,31 @@ def my_feedback(arguments, context):
 # format='link' is for.
 def build_report(arguments, context):
     backtest_id = (arguments.get("backtest_id") or "").strip()
-    row = store.get_result(backtest_id)
-    if row is None or store.key_owner(row["key_id"]) != context["account_id"]:
+    # THE SAME RESOLVER get_backtest uses. These two used to differ: this one recovered
+    # the owner with key_owner(), which reads api_keys and therefore returns None for the
+    # synthetic key_id an OAuth session carries -- so build_report denied every backtest
+    # its own caller had just created, while get_backtest returned it.
+    row = store.result_for_account(backtest_id, context.get("account_id"),
+                                   context.get("key_id"))
+    if row is None:
         # Same wording whether it does not exist or belongs to someone else: a different
         # message for each turns this into an oracle for guessing other people's ids.
         raise ToolError(f"No backtest {backtest_id!r} on this account.")
     payload = json.loads(row["payload_json"])
     url = f"{context['base_url']}/r/{row['report_token']}"
-    if arguments.get("format") == "link":
+    # DEFAULT 'link'. A JSON Schema "default" is documentation for the caller, not
+    # something the server applies, so declaring it there and reading
+    # `arguments.get("format") == "link"` here left the old behaviour in place: every
+    # call that omitted the field got the whole document back, tens of thousands of
+    # tokens, when the URL was what was wanted.
+    fmt = (arguments.get("format") or "link").strip().lower()
+    if fmt not in ("link", "artifact", "full"):
+        raise ToolError("format must be one of link, artifact, full")
+    if fmt == "link":
         return {"backtest_id": backtest_id, "report_url": url,
                 "message": "The hosted report renders exactly what that backtest released."}
 
-    if arguments.get("format") == "full":
+    if fmt == "full":
         return _full_report(arguments, context, row, payload, backtest_id)
 
     # What is drawn is bounded by what was released, so a summary-detail backtest yields a
@@ -1226,25 +1436,24 @@ def build_report(arguments, context):
             "trades_shown": detail.get("trades_returned", 0),
             "per_leg_prices": bool(detail.get("prices_included")),
         },
-        "how_to_publish": {
-            "claude": ("Create an Artifact with type text/html and this exact document as "
-                       "its content. Do not edit it."),
-            "chatgpt": "Open it in Canvas as an HTML document, unedited.",
-            "gemini": "Open it in Canvas as an HTML document, unedited.",
-            "cli_or_api": ("Write it to a .html file and tell the user the path. It opens "
-                           "in any browser with no server."),
-            "constraints_already_met": ("Self-contained: no external requests, no CDN, no "
-                                        "fonts to fetch. Theme-aware. Safe to publish as-is "
-                                        "in a sandboxed artifact."),
+        # What the document IS, rather than what the host should do with it. This block
+        # used to name each platform's feature by hand ("Create an Artifact", "Open it in
+        # Canvas") and tell the model not to edit the content. Directing a host's own
+        # features from inside a tool result is what the app review flagged; whether and
+        # how to display it is the host's decision.
+        "document_properties": {
+            "self_contained": True,
+            "external_requests": False,
+            "theme_aware": True,
+            "note": ("The figures are rendered from the stored backtest. A chart redrawn "
+                     "from the trade table is a second source and can disagree with it."),
         },
-        "tell_the_user": ("Say what the report concluded — the verdict and the one number "
-                          "that matters — rather than describing the document. They can "
-                          "see the document."),
     }
 
 
 HANDLERS = {
     "run_backtest": run_backtest,
+    "list_backtests": list_backtests,
     "build_report": build_report,
     "submit_feedback": submit_feedback,
     "my_feedback": my_feedback,

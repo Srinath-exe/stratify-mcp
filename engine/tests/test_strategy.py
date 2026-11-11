@@ -115,7 +115,7 @@ def test_entry_may_be_any_minute_of_the_session():
                                   "then": {"teleport": {}}}]}, "unknown action"),
     ({"legs": [leg()], "portfolio": {"stop_when_sad": True}}, "unknown field"),
     ({"legs": [leg()], "resolution": 7}, "1, 5 or 15"),
-    ({"legs": [leg()], "symbol": "BANKNIFTY"}, "only NIFTY"),
+    ({"legs": [leg()], "symbol": "BANKNIFTY"}, "runs on NIFTY only"),
 ])
 def test_a_bad_strategy_is_refused_with_a_reason(bad, says):
     bad.setdefault("period", P)

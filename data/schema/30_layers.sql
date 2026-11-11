@@ -18,6 +18,21 @@ CREATE TABLE stratify.contract_day
   spot_open Float32, spot_close Float32, moneyness Int32,
   px_0915 Float32, px_0930 Float32, px_1100 Float32, px_1200 Float32,
   px_1230 Float32, px_1300 Float32, px_1400 Float32, px_1500 Float32, px_1529 Float32,
+  -- ent_HHMM: the last TRADED close in the 15-minute bucket (T-14 .. T]. 0 means the
+  -- strike did not trade in that bucket, which is exactly the condition that must exclude
+  -- it from entry (decision B4). px_HHMM above is a different thing and stays: the last
+  -- close at or before T, traded or not. Both are kept, named differently, because
+  -- collapsing them is how "entry price" quietly comes to mean two things.
+  --
+  -- THESE WERE MISSING FROM THIS FILE while being present and populated in production --
+  -- 31_entry_prices.sql adds the columns and nothing has ever populated them, so a
+  -- rebuild from build.sh produced a contract_day the engine cannot query at all
+  -- (`Unknown expression identifier ent_0930`). Found 2026-10-22 when the SENSEX build
+  -- became the first thing to run this pipeline end to end since the columns were added.
+  -- The expressions below were verified to reproduce production's values exactly on
+  -- 18,647 June-2026 NIFTY contract-days before being committed here.
+  ent_0915 Float32, ent_0930 Float32, ent_1100 Float32, ent_1200 Float32,
+  ent_1230 Float32, ent_1300 Float32, ent_1400 Float32, ent_1500 Float32, ent_1529 Float32,
   n_bars UInt16, traded_bars UInt16 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(trade_date)
@@ -35,6 +50,15 @@ SELECT toDate(timestamp) AS trade_date, expiry_date, strike_price, option_type,
        argMaxIf(close, timestamp, mod_ <= 750), argMaxIf(close, timestamp, mod_ <= 780),
        argMaxIf(close, timestamp, mod_ <= 840), argMaxIf(close, timestamp, mod_ <= 900),
        argMaxIf(close, timestamp, mod_ <= 929),
+       argMaxIf(close, timestamp, volume > 0 AND mod_ BETWEEN 541 AND 555),
+       argMaxIf(close, timestamp, volume > 0 AND mod_ BETWEEN 556 AND 570),
+       argMaxIf(close, timestamp, volume > 0 AND mod_ BETWEEN 646 AND 660),
+       argMaxIf(close, timestamp, volume > 0 AND mod_ BETWEEN 706 AND 720),
+       argMaxIf(close, timestamp, volume > 0 AND mod_ BETWEEN 736 AND 750),
+       argMaxIf(close, timestamp, volume > 0 AND mod_ BETWEEN 766 AND 780),
+       argMaxIf(close, timestamp, volume > 0 AND mod_ BETWEEN 826 AND 840),
+       argMaxIf(close, timestamp, volume > 0 AND mod_ BETWEEN 886 AND 900),
+       argMaxIf(close, timestamp, volume > 0 AND mod_ BETWEEN 915 AND 929),
        count(), countIf(volume > 0)
 FROM ( SELECT expiry_date, strike_price, option_type, timestamp,
               open, high, low, close, volume, open_interest, spot, dte,
