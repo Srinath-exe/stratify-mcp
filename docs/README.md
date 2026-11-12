@@ -16,7 +16,7 @@ and the disagreement is worth reporting.
 | `MCP_COMPATIBILITY.md` | What 1,538 registry servers actually do, and what we matched. |
 | `TESTING_STRATEGY.md` | What is tested, and the failures each test exists to catch. |
 
-Three things in them are deliberately stale, and are left rather than quietly rewritten:
+Four things in them are deliberately stale, and are left rather than quietly rewritten:
 
 - **Hostnames.** Planning used `mcp.stratify.io`. The live endpoint is
   `https://stratify-mcp.aeon-labs.site/mcp`.
@@ -25,3 +25,7 @@ Three things in them are deliberately stale, and are left rather than quietly re
 - **References to documents not published here** — a data audit, a performance analysis, a
   product requirements doc, an open-questions list. They are internal and are marked as
   such where cited.
+- **One index.** They describe a NIFTY-only service. SENSEX was added on 2026-10-22 as a
+  second serving database (`engine/db.py`, `SYMBOL_DB`) with its own tier windows
+  (`engine/spec.py`, `TIER_WINDOWS`) and row policies (`data/schema/71_tiers_symbol.sql`).
+  The top-level README describes what is served today.
