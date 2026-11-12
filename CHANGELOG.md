@@ -11,6 +11,26 @@ point at the methodology version.
 
 ## [Unreleased]
 
+### Added (server sync, 2026-11-11)
+- **SENSEX**, served from its own database (`engine/db.py` `SYMBOL_DB`), with per-symbol
+  tier windows: SENSEX has no options before 2023-08-07, so no tier claims earlier history.
+  Row policies for a per-symbol database in `data/schema/71_tiers_symbol.sql`.
+- Global admission control for free traffic (`server/quota.py`): a burst waits briefly
+  for a slot instead of turning into a 429.
+- Every tool declares its auth scheme (`_meta.securitySchemes`) and an output schema.
+- A browser opening `/mcp` gets a page saying what the URL is for (still 405, `Allow: POST`).
+- `robots.txt` and `sitemap.xml` for the public pages.
+
+### Changed (server sync, 2026-11-11)
+- `run_backtest` is annotated `readOnlyHint: false`: it stores its result.
+- Rule fields that hold fractions are named `*_frac` (`pnl_frac_of_credit`, ...); the old
+  `*_pct` names still parse and mean the same fraction.
+- Tests updated to match (five were asserting behaviour the server no longer has).
+
+### Fixed (server sync, 2026-11-11)
+- Every service-DB connection was born mid-transaction after the owner backfill, which made
+  `/readyz` answer 503 while the database was writable. It now commits the migration.
+
 ### Added
 - **OAuth 2.1 authorization server** (`server/mcpauth.py`): PKCE S256 required, dynamic
   client registration, client-ID metadata documents, exact redirect matching with the

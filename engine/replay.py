@@ -115,7 +115,7 @@ def spot_track(date_from, date_to, bucket=DEFAULT_BUCKET):
             SELECT toStartOfInterval(timestamp, INTERVAL %(b)s minute) AS t,
                    argMin(open, timestamp) AS o, max(high) AS h,
                    min(low) AS l, argMax(close, timestamp) AS c
-            FROM {db.DATABASE}.spot_1min
+            FROM {db.database()}.spot_1min
             WHERE toDate(timestamp) IN %(days)s
             GROUP BY t ORDER BY t
             """,
@@ -128,7 +128,7 @@ def spot_track(date_from, date_to, bucket=DEFAULT_BUCKET):
 
 def _trading_days(date_from, date_to):
     rows = db.rows(
-        f"""SELECT DISTINCT toDate(timestamp) AS d FROM {db.DATABASE}.spot_1min
+        f"""SELECT DISTINCT toDate(timestamp) AS d FROM {db.database()}.spot_1min
             WHERE timestamp >= %(a)s AND timestamp < addDays(toDate(%(b)s), 1)
             ORDER BY d""",
         {"a": f"{date_from} 00:00:00", "b": str(date_to)})
@@ -161,7 +161,7 @@ def premium_track(trades, bucket=DEFAULT_BUCKET):
             SELECT expiry_date, option_type, strike_price,
                    toStartOfInterval(timestamp, INTERVAL %(b)s minute) AS t,
                    argMax(close, timestamp) AS c
-            FROM {db.DATABASE}.options_1min
+            FROM {db.database()}.options_1min
             WHERE (expiry_date, option_type, strike_price) IN %(keys)s
               AND dateDiff('day', toDate(timestamp), expiry_date) <= %(mdte)s
             GROUP BY expiry_date, option_type, strike_price, t
@@ -316,6 +316,10 @@ def build(result, bucket=DEFAULT_BUCKET):
         raise NotReleasable(
             "this strategy holds single-leg positions, whose combined premium is just "
             "that option's price. It cannot be replayed.")
+    if any(_distinct_contracts(t.legs) < MIN_LEGS for t in trades):
+        raise NotReleasable(
+            "every leg of this position is the same contract, so its entry and exit "
+            "values are that option's price. It cannot be replayed.")
 
     lo_day = min(t.entry_ts.date() for t in trades)
     hi_day = max(t.exit_ts.date() for t in trades)
@@ -323,7 +327,14 @@ def build(result, bucket=DEFAULT_BUCKET):
     spot = spot_track(lo_day, hi_day, bucket)
     stamps = sorted(spot)
     index_of = {ts: i for i, ts in enumerate(stamps)}
-    prem = premium_track(trades, bucket)
+    # NO PER-MINUTE PREMIUM, BY DECISION (11 Nov 2026). This used to release the
+    # position's combined premium bar by bar on the theory that a sum over >=2 legs is not
+    # invertible. It is, across backtests: replay "buy CE K1 + buy CE K2" and "buy CE K1 +
+    # sell CE K2" and the sum of the two series is twice CE K1's price, minute by minute.
+    # A QA probe extracted 3,110 single-contract prices from one replay of a duplicated
+    # leg, unmetered. The rule is that option prices never leave the server, so the replay
+    # carries the index, the trade spans and each trade's own result -- nothing per minute
+    # about the options. `p` stays in the payload, empty, so old pages render unchanged.
 
     bars = [{"t": ts.strftime("%Y-%m-%d %H:%M"), "o": spot[ts][0], "h": spot[ts][1],
              "l": spot[ts][2], "c": spot[ts][3], "p": None}
@@ -346,16 +357,7 @@ def build(result, bucket=DEFAULT_BUCKET):
         span = [ts for ts in stamps if lo <= ts <= hi]
         if not span:
             continue
-        series = prem.get(i, {})
         i0, i1 = index_of[span[0]], index_of[span[-1]]
-        p = [None if series.get(ts) is None else round(series[ts], 2) for ts in span]
-
-        # THE TERMINAL VALUE IS THE ENGINE'S, NOT THE TAPE'S. An expiring position settles
-        # against the index -- intrinsic on the mean of its final thirty minutes -- and a
-        # cash-settled leg's last option print is not where it ended. Without this the
-        # replay finishes on a different number from the table below it, which is the one
-        # inconsistency that would make a reader stop believing the page.
-        p[-1] = round(-t.exit_value_pts, 2)
 
         out.append({
             "n": i + 1,
@@ -375,7 +377,7 @@ def build(result, bucket=DEFAULT_BUCKET):
             "charges_rupees": round(t.charges_rupees, 2),
             "pnl_rupees": round(t.pnl_rupees, 2),
             "i0": i0, "i1": i1,
-            "p": _quant(p),
+            "p": [],
         })
 
     return {"spot": _encode(bars), "expiries": expiries, "trades": out,
@@ -389,6 +391,14 @@ def _quant(vals):
 
 
 MIN_LEGS = 2
+
+
+def _distinct_contracts(legs):
+    """How many different contracts a position holds. Two legs on one contract are one
+    contract twice: its combined value is a multiple of that option's price."""
+    get = lambda l, k: l.get(k) if isinstance(l, dict) else getattr(l, k, None)
+    return len({(str(get(l, "expiry")), get(l, "option_type") or get(l, "type"),
+                 get(l, "strike")) for l in legs})
 
 
 class NotReleasable(AssertionError):
@@ -428,6 +438,9 @@ def release_audit(track):
         for leg in tr["legs"]:
             bad = set(leg) - {"action", "type", "strike"}
             assert not bad, f"leg carries non-strike fields: {sorted(bad)}"
+        # No per-minute premium series, ever: see build(). A non-empty `p` is a leak.
+        if tr.get("p"):
+            raise NotReleasable(f"trade {tr.get('n')} carries a per-minute premium series")
     return {"price_points_released": 0,
-            "basis": ("index OHLC (not the asset) and position-level sums over >=2 legs "
-                      "(not invertible to any leg)")}
+            "basis": ("index OHLC (not the asset), trade spans, and each trade's own "
+                      "entry value and result. No per-minute option or premium series.")}

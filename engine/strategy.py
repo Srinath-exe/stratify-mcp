@@ -49,11 +49,18 @@ FIELDS = {
     # --- the position, in points per lot ------------------------------------
     "pnl_pts":            "running mark-to-market P&L of the whole position, in points",
     "pnl_rupees":         "the same, in rupees at this lot size and lot count",
-    "pnl_pct_of_credit":  "P&L as a fraction of the credit collected at entry "
-                          "(-1.0 = the position has given back everything it took in)",
-    "pnl_pct_of_max":     "P&L as a fraction of the most this position could ever make",
+    # FRACTIONS, and they say so in the name. These were called *_pct while holding a
+    # fraction, next to spot_move_pct and gap_pct which hold real per-cent. A model told
+    # "stop at 2x the credit, take profit at 60%" wrote {"lte": -100} and {"gte": 60},
+    # which are unreachable, so no rule ever fired, all fifty trades ran to expiry and
+    # nothing said a word -- one of them gave back 193 points against a 55-point credit
+    # without stopping. The suffix now carries the unit, and the old names still parse.
+    "pnl_frac_of_credit": "P&L as a fraction of the credit collected at entry: 0.6 is "
+                          "60% of it, and -1.0 means the position has given back "
+                          "everything it took in (the premium has doubled)",
+    "pnl_frac_of_max":    "P&L as a fraction of the most this position could ever make",
     "combined_premium":   "what it would cost to close the position right now, in points",
-    "credit_kept_pct":    "fraction of the entry credit still unspent (1.0 at entry, "
+    "credit_kept_frac":   "fraction of the entry credit still unspent (1.0 at entry, "
                           "0.0 at break-even)",
     # --- a single leg -------------------------------------------------------
     "leg_mark":           "the current price of one leg, in points",
@@ -336,6 +343,18 @@ def parse_leg(raw, where, index=None):
 
 # ---------------------------------------------------------------------- condition
 
+
+def _example(key):
+    """A comparison example that suits the field being compared."""
+    if key == "day_of_week":
+        return '{"eq": 4}'                       # Thursday
+    if key in FRACTION_LIMITS:
+        return '{"gte": 0.6}'                    # 60% of the credit
+    if key in TIME_FIELDS:
+        return '{"gte": "14:30"}'
+    return '{"lte": -80}'
+
+
 def parse_condition(raw, where, n_legs):
     """A condition tree. Leaves compare one named quantity against a number.
 
@@ -361,13 +380,17 @@ def parse_condition(raw, where, n_legs):
                        for i, v in enumerate(val)]}
     if key == "not":
         return {"op": "not", "of": [parse_condition(val, f"{where}.not", n_legs)]}
+    key = FIELD_ALIASES.get(key, key)
     if key not in FIELDS and indicator_field(key) is None:
         raise StrategyError(
             f"{where}: unknown field {key!r}. Available: {', '.join(sorted(FIELDS))}, "
             f"and index indicators: {', '.join(INDICATOR_DOC)}")
     if not isinstance(val, dict):
+        # The example has to suit the field. A generic 'like {"lte": -80}' was shown for
+        # day_of_week, where -80 is meaningless, and an assistant asked for "every
+        # Thursday" burned its turns guessing instead of writing {"eq": 4}.
         raise StrategyError(
-            f'{where}.{key} must be a comparison object like {{"lte": -80}}')
+            f"{where}.{key} must be a comparison object, e.g. {_example(key)}")
     allowed = set(COMPARATORS) | ({"leg"} if key in LEG_FIELDS else set())
     _only(val, allowed, f"{where}.{key}")
     cmps = [c for c in COMPARATORS if c in val]
@@ -402,7 +425,27 @@ def parse_condition(raw, where, n_legs):
         if not (1 <= lo <= 7 and 1 <= hi <= 7):
             raise StrategyError(
                 f"{where}.day_of_week runs 1 (Monday) to 7 (Sunday); the market is open "
-                f"1-5. Got {val[cmp_]!r}")
+                f"1-5, so Thursday is {{\"eq\": 4}}. Got {val[cmp_]!r}")
+    if key in FRACTION_LIMITS:
+        # The unit mistake, caught here rather than at the end of a backtest that ignored
+        # the rule. 60 meant as "60%" is 0.6; a stop at twice the credit received is
+        # -1.0, not -100.
+        _floor, ceil = FRACTION_LIMITS[key]
+        vals = bound if cmp_ == "between" else [bound]
+        for v in vals:
+            if ceil is not None and v > ceil:
+                raise StrategyError(
+                    f"{where}.{key} is a FRACTION, not a percentage, and cannot exceed "
+                    f"{ceil}: {v!r} would never be reached. 60% is 0.6. A stop at twice "
+                    f"the credit received is -1.0, because the position has then given "
+                    f"back the whole credit.")
+            if v <= -20:
+                # A stop at twenty times the credit received is not a stop. Anything
+                # this far below zero is a percentage that was never converted.
+                raise StrategyError(
+                    f"{where}.{key} is a FRACTION, not a percentage: {v!r} reads as a "
+                    f"percentage. Losing the whole credit is -1.0; losing half of it "
+                    f"is -0.5.")
     leg = None
     if key in LEG_FIELDS:
         if "leg" not in val:
@@ -415,6 +458,26 @@ def parse_condition(raw, where, n_legs):
                 f"{where}.{key}.leg must be a leg index from 0 to {n_legs - 1}")
     return {"op": "cmp", "field": key, "cmp": cmp_, "bound": bound, "leg": leg}
 
+
+# The old spelling of the three fraction fields. Accepted forever so that stored
+# strategies and anything already written against the published schema keep working; the
+# semantics are identical, only the name changed.
+FIELD_ALIASES = {
+    "pnl_pct_of_credit": "pnl_frac_of_credit",
+    "pnl_pct_of_max":    "pnl_frac_of_max",
+    "credit_kept_pct":   "credit_kept_frac",
+}
+
+# What a fraction field can actually reach. A short position's best case is the whole
+# credit, so a rule asking for MORE than that can never fire; giving back more than the
+# credit is possible without limit, so there is no floor. These bounds exist to turn the
+# classic unit mistake into an error that names the fix, instead of a backtest that runs
+# to completion having ignored the rule.
+FRACTION_LIMITS = {
+    "pnl_frac_of_credit": (None, 1.0),
+    "pnl_frac_of_max":    (None, 1.0),
+    "credit_kept_frac":   (None, 1.0),
+}
 
 # ------------------------------------------------------------------------- action
 
@@ -713,7 +776,13 @@ def parse(raw, window=None):
 
     symbol = raw.get("symbol", "NIFTY")
     if symbol != "NIFTY":
-        raise StrategyError(f"only NIFTY is served today; {symbol!r} is not available")
+        # SENSEX IS served -- through the preset form. The open form's entry gates read a
+        # daily market-state table that exists only in NIFTY's serving database so far, so
+        # saying "only NIFTY is served" here contradicted describe_coverage (QA, 11 Nov).
+        raise StrategyError(
+            f"the open form (legs + rules) runs on NIFTY only for now; {symbol!r} is served "
+            f"through the preset form instead: a spec with `structure` and `params` and "
+            f"symbol {symbol!r} (see describe_coverage for the structures)")
 
     legs_raw = raw.get("legs")
     if not isinstance(legs_raw, list) or not legs_raw:

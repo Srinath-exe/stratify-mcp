@@ -234,8 +234,10 @@ def test_a_loss_rule_is_read_as_a_stop_and_a_profit_rule_as_a_target():
     card = rulecard.describe({
         "legs": [{"side": "sell", "type": "CE", "strike": {"pct_offset": 1.0}}],
         "entry": {"cadence": "weekly", "dte": 2, "time": "09:30"},
-        "rules": [{"when": {"pnl_pct_of_credit": {"gte": 70}}, "then": "close"},
-                  {"when": {"pnl_pct_of_credit": {"lte": -120}}, "then": "close"},
+        # Fractions, as the fields now say: 0.7 is 70% of the credit. The test used the old
+        # *_pct names with 70 and -120, which since the rename mean 70x and 120x the credit.
+        "rules": [{"when": {"pnl_frac_of_credit": {"gte": 0.7}}, "then": "close"},
+                  {"when": {"pnl_frac_of_credit": {"lte": -1.2}}, "then": "close"},
                   {"when": {"leg_mark_mult": {"gte": 1.6, "leg": 0}},
                    "then": {"roll": {"legs": [0], "to": {"pct_offset": 2.0}}}}]})
     assert card["target"][0]["short"] == "70% of credit"

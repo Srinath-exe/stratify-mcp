@@ -54,8 +54,12 @@ def test_credit_kept_and_pct_of_credit_use_the_ENTRY_credit():
     against the credit they originally took in."""
     p = pos()
     st = state(p, [20.0, 19.0])
+    # Both spellings, because the old one must keep working for rules already stored.
+    assert sim._field("pnl_frac_of_credit", None, p, st, 75, 1) == pytest.approx(39 / 78)
     assert sim._field("pnl_pct_of_credit", None, p, st, 75, 1) == pytest.approx(39 / 78)
     p.credit += 100.0                                  # as a roll would
+    # Both spellings, because the old one must keep working for rules already stored.
+    assert sim._field("pnl_frac_of_credit", None, p, st, 75, 1) == pytest.approx(39 / 78)
     assert sim._field("pnl_pct_of_credit", None, p, st, 75, 1) == pytest.approx(39 / 78)
 
 

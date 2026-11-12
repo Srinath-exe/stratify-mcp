@@ -51,7 +51,7 @@ def _profile():
     return {(r["dte_bucket"], r["otm_bucket"]): r for r in db.rows(
         f"SELECT dte_bucket, otm_bucket, n_contract_days, pct_minutes_traded, "
         f"median_volume_lots, median_price_pts, median_day_volume_lots "
-        f"FROM {db.DATABASE}.liquidity_profile")}
+        f"FROM {db.database()}.liquidity_profile")}
 
 
 def profile(dte, otm_points):

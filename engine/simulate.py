@@ -172,6 +172,10 @@ def _state(pos, ts, mark_of, spot, market=None, vix=None):
 
 
 def _field(name, leg_slot, pos, st, lot_size, lots):
+    # Aliases resolve here as well as at parse time, so a rule parsed before the *_pct
+    # fraction fields were renamed to *_frac still evaluates rather than silently
+    # returning None -- which is exactly the failure this rename was meant to end.
+    name = strat_mod.FIELD_ALIASES.get(name, name)
     if name in strat_mod.LEG_FIELDS:
         got = st["per_leg"].get(leg_slot)
         if got is None:
@@ -192,17 +196,17 @@ def _field(name, leg_slot, pos, st, lot_size, lots):
         return st["pnl"]
     if name == "pnl_rupees":
         return st["pnl"] * lot_size * lots
-    if name == "pnl_pct_of_credit":
+    if name == "pnl_frac_of_credit":
         # Denominator is the credit at ENTRY, not the running total. A roll that collects
         # more premium must not quietly loosen a stop the author wrote against the
         # original credit.
         return st["pnl"] / abs(pos.credit_at_entry) if pos.credit_at_entry else None
-    if name == "pnl_pct_of_max":
+    if name == "pnl_frac_of_max":
         mx = pos.max_profit
         return st["pnl"] / mx if mx else None
     if name == "combined_premium":
         return st["cost"]
-    if name == "credit_kept_pct":
+    if name == "credit_kept_frac":
         c = pos.credit_at_entry
         return (c - st["cost"]) / c if c else None
     if strat_mod.is_market_field(name):
@@ -646,7 +650,7 @@ def _advance(strat, pos, path, spot_path, lot_size, lots, market=None, vix_path=
         pos.last_seen = (ts, mark_of, spot)
         if strat.exit_when is not None and \
                 evaluate(strat.exit_when, pos, st, lot_size, lots):
-            _close_all(pos, ts, mark_of, "RULE")
+            _close_all(pos, ts, mark_of, "EXIT RULE")
             return None
         for ri, rule in enumerate(strat.rules):
             if pos.fired.get(ri, 0) >= rule["max_times"]:
@@ -656,7 +660,7 @@ def _advance(strat, pos, path, spot_path, lot_size, lots, market=None, vix_path=
             pos.fired[ri] = pos.fired.get(ri, 0) + 1
             act = rule["then"]
             if act["do"] == "close":
-                _close_all(pos, ts, mark_of, "RULE")
+                _close_all(pos, ts, mark_of, _exit_label(rule["label"]))
                 pos.log.append({"ts": str(ts), "rule": rule["label"], "did": "close",
                                 "pnl_pts": round(st["pnl"], 2)})
                 return None
@@ -680,6 +684,22 @@ def _close_all(pos, ts, mark_of, reason):
 
 
 # ---------------------------------------------------------------------- adjustments
+
+
+def _exit_label(label, fallback="RULE"):
+    """What a rule exit is CALLED in the result.
+
+    Every rule exit used to report the single word "RULE", so a strategy with a stop and
+    a target produced a table in which both read identically and neither could be counted.
+    "Which one did the work, the stop or the target?" is the first question anyone asks of
+    a managed position, and it could not be answered from the result at all.
+
+    The rule's own label is the answer, because it is the author's words for what that
+    rule is. Prefixed so a label can never be mistaken for one of the engine's own exits.
+    """
+    label = (label or "").strip()
+    return f"{fallback}: {label}" if label else fallback
+
 
 def _apply(strat, pending, lots):
     """Carry out every pending action across the chunk.
@@ -771,7 +791,8 @@ def _apply(strat, pending, lots):
             # Every leg closed and nothing reopened: the trade is over, whatever the rule
             # thought it was doing.
             pos.closed = True
-            pos.exit_ts, pos.exit_reason = ts, "RULE"
+            pos.exit_ts = ts
+            pos.exit_reason = _exit_label(act.get("rule", {}).get("label"))
 
 
 # ------------------------------------------------------------------------- settle
@@ -921,6 +942,7 @@ def run(strat, lots=1):
 
     trades, skipped = [], {}
     keys_seen, days_seen = set(), set()
+    fired_by_rule = {}
     # ONE query for the whole run: a few hundred rows covering every day it can touch.
     # Fetched unconditionally rather than only when a rule needs it, because it is smaller
     # than the decision about whether to fetch it.
@@ -979,6 +1001,10 @@ def run(strat, lots=1):
                 break
             _apply(strat, pending, lots)
 
+        for p in positions:
+            for ri, n in (p.fired or {}).items():
+                fired_by_rule[ri] = fired_by_rule.get(ri, 0) + n
+
         settle_spot = marks.settlement({p.horizon.date() for p in positions})
         for p in positions:
             t = _settle(strat, p, lots, settle_spot)
@@ -991,17 +1017,42 @@ def run(strat, lots=1):
     trades, dropped = apply_portfolio(strat, trades)
     skipped.update(dropped)
 
-    notes = []
+    notes, warnings = [], []
     n_adj = sum(len(t.adjustments) for t in trades)
     if n_adj:
         notes.append(f"{n_adj} rule action(s) fired across {sum(1 for t in trades if t.adjustments)} "
                      f"of {len(trades)} trades")
+
+    # A RULE THAT NEVER FIRED is the loudest thing a result can be silent about. A stop
+    # written in the wrong unit is unreachable, so the backtest runs to completion with
+    # every trade going to expiry and the summary looks perfectly ordinary -- one of them
+    # gave back 193 points against a 55-point credit while carrying a stop that could
+    # never trigger. If the rule did nothing, the strategy that ran is not the strategy
+    # that was described, and that is a warning, not a note.
+    if trades:
+        for ri, rule in enumerate(strat.rules):
+            if fired_by_rule.get(ri, 0) == 0:
+                label = (rule.get("label") or "").strip() or f"rules[{ri}]"
+                warnings.append(
+                    f"rule '{label}' never fired in {len(trades)} trades — check its "
+                    f"threshold and its units. Fractions run 0 to 1: 60% of the credit "
+                    f"is 0.6, and a stop at twice the credit received is -1.0.")
+
     if skipped:
         notes.append("cycles not taken: " +
                      ", ".join(f"{k}={v}" for k, v in sorted(skipped.items())))
+        # A gate that rejects most of the calendar is a different strategy from the one
+        # the user described, and dropped-cycle bias can carry half a result.
+        gated = skipped.get("entry_condition", 0)
+        total = gated + len(trades)
+        if total and gated / total > 0.5:
+            warnings.append(
+                f"the entry condition rejected {gated} of {total} cycles, so this tests "
+                f"{len(trades)} trades rather than the full calendar. Check the gate says "
+                f"what you meant.")
     if strat.resolution > 1:
         notes.append(f"walked every {strat.resolution} minutes, not every minute: a "
                      f"trigger that fires and reverses inside a bar is not seen")
-    return Result(spec=strat, trades=trades, notes=notes,
+    return Result(spec=strat, trades=trades, notes=notes, warnings=warnings,
                   n_contracts=len(keys_seen), n_trading_days=len(days_seen),
                   skipped=skipped)

@@ -93,12 +93,12 @@ def _cycles(spec):
     """
     if spec.cadence == "daily":
         return _daily_cycles_cached(spec.max_dte, spec.date_from, spec.date_to,
-                                    db.DATABASE, db.current_user.get())
+                                    db.database(), db.current_user.get())
     if spec.entry_days_before is not None:
         return _session_cycles_cached(spec.entry_days_before, spec.date_from, spec.date_to,
-                                      db.DATABASE, db.current_user.get())
+                                      db.database(), db.current_user.get())
     return _cycles_cached(spec.entry_dte, spec.date_from, spec.date_to,
-                          db.DATABASE, db.current_user.get())
+                          db.database(), db.current_user.get())
 
 
 @functools.lru_cache(maxsize=256)
@@ -113,7 +113,7 @@ def _session_cycles_cached(n_before, date_from, date_to, database, ch_user):
           SELECT expiry_date, trade_date, dte,
                  row_number() OVER (PARTITION BY expiry_date ORDER BY trade_date DESC) - 1
                    AS sessions_before
-          FROM ( SELECT DISTINCT expiry_date, trade_date, dte FROM {db.DATABASE}.contract_day
+          FROM ( SELECT DISTINCT expiry_date, trade_date, dte FROM {db.database()}.contract_day
                  WHERE trade_date >= %(d0)s AND trade_date <= %(d1)s
                    AND expiry_date <= %(d1)s AND trade_date <= expiry_date AND dte <= 45 ) )
         WHERE sessions_before = %(n)s ORDER BY expiry_date
@@ -139,7 +139,7 @@ def _daily_cycles_cached(max_dte, date_from, date_to, database, ch_user):
           SELECT expiry_date, trade_date, dte,
                  row_number() OVER (PARTITION BY trade_date
                                     ORDER BY dte, expiry_date) AS rn
-          FROM ( SELECT DISTINCT expiry_date, trade_date, dte FROM {db.DATABASE}.contract_day
+          FROM ( SELECT DISTINCT expiry_date, trade_date, dte FROM {db.database()}.contract_day
                  WHERE trade_date >= %(d0)s AND trade_date <= %(d1)s
                    AND expiry_date <= %(d1)s AND dte <= %(mdte)s ) )
         WHERE rn = 1 ORDER BY trade_date
@@ -169,7 +169,7 @@ def _cycles_cached(entry_dte, date_from, date_to, database, ch_user):
           SELECT expiry_date, trade_date, dte,
                  row_number() OVER (PARTITION BY expiry_date
                                     ORDER BY abs(toInt32(dte) - %(dte)s), trade_date) AS rn
-          FROM ( SELECT DISTINCT expiry_date, trade_date, dte FROM {db.DATABASE}.contract_day
+          FROM ( SELECT DISTINCT expiry_date, trade_date, dte FROM {db.database()}.contract_day
                  WHERE trade_date >= %(d0)s AND trade_date <= %(d1)s
                    AND expiry_date <= %(d1)s AND dte <= 45 ) )
         WHERE rn = 1 ORDER BY expiry_date
@@ -221,7 +221,7 @@ def _chain_snapshot(cycles, column):
         f"""
         SELECT toYYYYMMDD(expiry_date) AS expiry_key, toYYYYMMDD(trade_date) AS day_key,
                option_type, strike_price, {column} AS px
-        FROM {db.DATABASE}.contract_day
+        FROM {db.database()}.contract_day
         WHERE (expiry_date, trade_date) IN %(pairs)s AND {column} > 0
         """,
         {"pairs": pairs})
@@ -243,7 +243,7 @@ def _spot_at(spec, cycles):
         return {}
     return _spot_at_cached(spec.entry_minute,
                            tuple(sorted({c["trade_date"] for c in cycles})),
-                           db.DATABASE, db.current_user.get())
+                           db.database(), db.current_user.get())
 
 
 @functools.lru_cache(maxsize=256)
@@ -251,7 +251,7 @@ def _spot_at_cached(entry_minute, days, database, ch_user):
     rows = db.rows(
         f"""
         SELECT toDate(timestamp) AS d, argMax(close, timestamp) AS spot
-        FROM {db.DATABASE}.spot_1min
+        FROM {db.database()}.spot_1min
         WHERE toDate(timestamp) IN %(days)s
           AND (toHour(timestamp) * 60 + toMinute(timestamp)) <= %(m)s
         GROUP BY d
@@ -468,7 +468,7 @@ def _path(cycles_legs, date_to, max_dte):
     rows = db.rows(
         f"""
         SELECT expiry_date, option_type, strike_price, timestamp, close, volume
-        FROM {db.DATABASE}.options_1min
+        FROM {db.database()}.options_1min
         WHERE (expiry_date, option_type, strike_price) IN %(keys)s
           AND toDate(timestamp) <= %(d1)s
           AND dateDiff('day', toDate(timestamp), expiry_date) <= %(mdte)s
@@ -486,7 +486,7 @@ def _settlement_spot(expiries):
     """NSE final settlement price: mean of the underlying over the last 30 minutes."""
     if not expiries:
         return {}
-    return _settlement_cached(tuple(sorted(expiries)), db.DATABASE, db.current_user.get())
+    return _settlement_cached(tuple(sorted(expiries)), db.database(), db.current_user.get())
 
 
 @functools.lru_cache(maxsize=256)
@@ -494,7 +494,7 @@ def _settlement_cached(expiries, database, ch_user):
     rows = db.rows(
         f"""
         SELECT toDate(timestamp) AS d, avg(close) AS settle
-        FROM {db.DATABASE}.spot_1min
+        FROM {db.database()}.spot_1min
         WHERE toDate(timestamp) IN %(days)s
           AND (toHour(timestamp) * 60 + toMinute(timestamp))
               > %(m)s - %(w)s
@@ -529,11 +529,7 @@ def _exit_trigger(spec, entry_credit, width_pts, exit_value):
     p = spec.params
     credit = entry_credit
     s = spec.structure
-    if s == "short_strangle":
-        sl = p.get("sl_mult")
-        if sl is not None and exit_value <= -credit * (1 + float(sl)):
-            return "SL"
-    elif s == "credit_spread":
+    if s in ("short_strangle", "credit_spread"):
         sl, tp = p.get("sl_mult"), p.get("tp_pct")
         if sl is not None and exit_value <= -credit * (1 + float(sl)):
             return "SL"
@@ -554,6 +550,20 @@ def _exit_trigger(spec, entry_credit, width_pts, exit_value):
 
 def run(raw_spec, lots=1):
     spec = raw_spec if isinstance(raw_spec, spec_mod.StrategySpec) else spec_mod.parse(raw_spec)
+    # BIND THE SERVING DATABASE FROM THE SPEC, here and nowhere else. Each symbol has its
+    # own serving database; a caller that forgot to bind would be served another symbol's
+    # chain, and every resulting number would be plausible and wrong. The sibling
+    # mechanism use_tier() is left to callers and that is precisely how a paid spec came
+    # back with one year of trades and no error. One binding, at the one place that always
+    # has the symbol.
+    _db_token = db.use_symbol(spec.symbol)
+    try:
+        return _run(spec, lots)
+    finally:
+        db.current_db.reset(_db_token)
+
+
+def _run(spec, lots=1):
     cycles = _cycles(spec)
     snapshots = _entry_snapshot(spec, cycles)
     spots = _spot_at(spec, cycles)
@@ -679,7 +689,7 @@ def run(raw_spec, lots=1):
           "legs": o["legs"], "sl": o["sl"], "tp": o["tp"],
           "hard_exit": (o["exit_at"].strftime("%Y-%m-%d %H:%M:%S")
                         if o["exit_at"] else None)} for o in opened],
-        database=db.DATABASE,
+        database=db.database(),
         max_dte=max((o["cycle"]["dte"] for o in opened), default=None))
 
     # A timed exit needs a price at the exit clock time, and only for the cycles that

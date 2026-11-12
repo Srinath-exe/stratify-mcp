@@ -55,7 +55,7 @@ def chain_at(pairs, minute, symbol="NIFTY"):
         rows = db.rows(
             f"""SELECT toYYYYMMDD(expiry_date) AS ek, toYYYYMMDD(trade_date) AS dk,
                        option_type, strike_price, {col} AS px
-                FROM {db.DATABASE}.contract_day
+                FROM {db.database()}.contract_day
                 WHERE (expiry_date, trade_date) IN %(pairs)s AND {col} > 0""",
             {"pairs": pairs})
     else:
@@ -63,7 +63,7 @@ def chain_at(pairs, minute, symbol="NIFTY"):
             f"""SELECT toYYYYMMDD(expiry_date) AS ek, toYYYYMMDD(toDate(timestamp)) AS dk,
                        option_type, strike_price,
                        argMax(close, timestamp) AS px
-                FROM {db.DATABASE}.options_1min
+                FROM {db.database()}.options_1min
                 WHERE (expiry_date, toDate(timestamp)) IN %(pairs)s
                   AND (toHour(timestamp) * 60 + toMinute(timestamp))
                         BETWEEN %(lo)s AND %(hi)s
@@ -154,7 +154,7 @@ def _paths_batch(keys, t_from, t_to, resolution, max_days_open, out):
                   f"<= {int(max_days_open)}")
     rows = db.rows(
         f"""SELECT expiry_date, option_type, strike_price, timestamp, close
-            FROM {db.DATABASE}.options_1min
+            FROM {db.database()}.options_1min
             WHERE (expiry_date, option_type, strike_price) IN %(keys)s
               AND timestamp >= toDateTime(%(t0)s, 'Asia/Kolkata')
               AND timestamp <= toDateTime(%(t1)s, 'Asia/Kolkata')
@@ -196,7 +196,7 @@ def _spot_slice(t_from, t_to, resolution, out):
     res_clause = ("" if resolution <= 1 else
                   f"AND modulo(toMinute(timestamp), {int(resolution)}) = 0")
     rows = db.rows(
-        f"""SELECT timestamp, close FROM {db.DATABASE}.spot_1min
+        f"""SELECT timestamp, close FROM {db.database()}.spot_1min
             WHERE timestamp >= toDateTime(%(t0)s, 'Asia/Kolkata')
               AND timestamp <= toDateTime(%(t1)s, 'Asia/Kolkata')
               {res_clause}
@@ -212,7 +212,7 @@ def spot_at(days, minute):
     all that is needed and pulling the whole tape would be wasteful."""
     if not days:
         return {}
-    return _spot_at_cached(tuple(sorted(days)), minute, db.DATABASE, db.current_user.get())
+    return _spot_at_cached(tuple(sorted(days)), minute, db.database(), db.current_user.get())
 
 
 @functools.lru_cache(maxsize=256)
@@ -232,7 +232,7 @@ def settlement(expiries):
     15:29 close, and not the option's last print."""
     if not expiries:
         return {}
-    return _settlement_cached(tuple(sorted(expiries)), db.DATABASE,
+    return _settlement_cached(tuple(sorted(expiries)), db.database(),
                               db.current_user.get())
 
 
@@ -253,7 +253,7 @@ def expiries_between(date_from, date_to, symbol="NIFTY"):
     """Every expiry with data, and the trading days that precede each. The cycle model is
     built from this rather than from a calendar: a holiday that moved an expiry is in the
     data and is not in anyone's calendar file."""
-    return _expiries_cached(date_from, date_to, db.DATABASE, db.current_user.get())
+    return _expiries_cached(date_from, date_to, db.database(), db.current_user.get())
 
 
 @functools.lru_cache(maxsize=32)
@@ -282,7 +282,7 @@ def market_days(d_from, d_to):
     rows = db.rows(
         f"""SELECT d, dow, prev_close, gap_pct, prev_day_move_pct, realised_vol_20d,
                    vix_prev_close
-            FROM {db.DATABASE}.market_day
+            FROM {db.database()}.market_day
             WHERE d >= %(a)s AND d <= %(b)s""",
         {"a": d_from.isoformat(), "b": d_to.isoformat()})
     return {r["d"]: {"dow": int(r["dow"]), "prev_close": float(r["prev_close"]),
@@ -320,7 +320,7 @@ def _vix_slice(t_from, t_to, resolution, out):
     res_clause = ("" if resolution <= 1 else
                   f"AND modulo(toMinute(timestamp), {int(resolution)}) = 0")
     rows = db.rows(
-        f"""SELECT timestamp, close FROM {db.DATABASE}.vix_1min
+        f"""SELECT timestamp, close FROM {db.database()}.vix_1min
             WHERE timestamp >= toDateTime(%(t0)s, 'Asia/Kolkata')
               AND timestamp <= toDateTime(%(t1)s, 'Asia/Kolkata')
               {res_clause}
@@ -341,7 +341,7 @@ def entry_days(cadence, dte, max_dte, date_from, date_to):
     makes two engines untrustworthy even when both are individually defensible.
     """
     return _entry_days_cached(cadence, dte, max_dte, date_from, date_to,
-                              db.DATABASE, db.current_user.get())
+                              db.database(), db.current_user.get())
 
 
 @functools.lru_cache(maxsize=256)
@@ -385,7 +385,7 @@ def _entry_days_cached(cadence, dte, max_dte, date_from, date_to, database, ch_u
 
 
 def trading_days(date_from, date_to):
-    return _trading_days_cached(date_from, date_to, db.DATABASE, db.current_user.get())
+    return _trading_days_cached(date_from, date_to, db.database(), db.current_user.get())
 
 
 @functools.lru_cache(maxsize=32)
@@ -422,7 +422,7 @@ def indicator_days(d_from, d_to, specs):
     import datetime as _dt
     start = d_from - _dt.timedelta(days=_INDICATOR_WARMUP_DAYS)
     rows = db.rows(
-        f"""SELECT d, prev_close FROM {db.DATABASE}.market_day
+        f"""SELECT d, prev_close FROM {db.database()}.market_day
             WHERE d >= %(a)s AND d <= %(b)s ORDER BY d""",
         {"a": start.isoformat(), "b": d_to.isoformat()})
     dates = [r["d"] for r in rows]

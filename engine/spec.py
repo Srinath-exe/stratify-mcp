@@ -26,8 +26,14 @@ from . import signals
 # written in sessions ("T-2"), and under a Tuesday expiry T-2 is Friday, calendar dte 4:
 # entry_dte 2 would pick Monday. The two are mutually exclusive.
 STRUCTURE_PARAMS = {
+    # tp_pct belongs here for the same reason it belongs on credit_spread: both take in
+    # a credit, and "stop at 2x the credit, take half of it off at 60%" is the most
+    # ordinary managed-strangle instruction there is. Its absence forced that request
+    # into the open-strategy form and the preset refused it outright, which read as the
+    # feature not existing.
     "short_strangle": {"required": {"pct_offset"},
-                       "optional": {"sl_mult", "entry_dte", "entry_days_before"}},
+                       "optional": {"sl_mult", "tp_pct", "entry_dte",
+                                    "entry_days_before"}},
     "credit_spread":  {"required": {"pct_offset", "pct_width"},
                        "optional": {"sl_mult", "tp_pct", "entry_dte", "entry_days_before",
                                     "direction"}},
@@ -55,18 +61,43 @@ MIN_TRADING_DAYS = 20
 # row policy on the free user, so a bug here cannot widen what a free key can read.
 import os
 
+# PER SYMBOL, because the two underlyings do not have the same history. NIFTY runs from
+# 2019-01; SENSEX options do not exist before 2023-08-07 (first expiry 2023-08-11) --
+# weekly SENSEX only launched 2024-05-31, so 2023-08..2024-05 is monthly contracts.
+# Advertising "seven years" on SENSEX would be advertising four years that never traded.
+SYMBOLS = ("NIFTY", "SENSEX")
+_FREE_YEAR = (dt.date(2025, 7, 1), dt.date(2026, 6, 30))
+SENSEX_FROM = dt.date(2023, 8, 7)          # measured: first SENSEX bar in fno.options
+
 TIER_WINDOWS = {
-    "free": (dt.date(2025, 7, 1), dt.date(2026, 6, 30)),
-    "plus": (dt.date(2021, 1, 1), dt.date(2026, 6, 30)),
-    "pro":  (dt.date(2019, 1, 1), dt.date(2026, 6, 30)),
-    "bench": (dt.date(2019, 1, 1), dt.date(2026, 6, 30)),   # capacity testing only
+    "free":  {"NIFTY": _FREE_YEAR,
+              "SENSEX": _FREE_YEAR},
+    "plus":  {"NIFTY":  (dt.date(2021, 1, 1), dt.date(2026, 6, 30)),
+              "SENSEX": (SENSEX_FROM,         dt.date(2026, 6, 30))},
+    "pro":   {"NIFTY":  (dt.date(2019, 1, 1), dt.date(2026, 6, 30)),
+              "SENSEX": (SENSEX_FROM,         dt.date(2026, 6, 30))},
+    "bench": {"NIFTY":  (dt.date(2019, 1, 1), dt.date(2026, 6, 30)),
+              "SENSEX": (SENSEX_FROM,         dt.date(2026, 6, 30))},   # capacity tests
 }
 DEFAULT_TIER = os.getenv("STRATIFY_DEFAULT_TIER", "free")
-DATA_FROM, DATA_TO = TIER_WINDOWS[DEFAULT_TIER]
+DATA_FROM, DATA_TO = TIER_WINDOWS[DEFAULT_TIER]["NIFTY"]
 
 
-def window_for(tier):
-    return TIER_WINDOWS.get(tier, TIER_WINDOWS["free"])
+def window_for(tier, symbol="NIFTY"):
+    """The served window for (tier, symbol).
+
+    `symbol` defaults to NIFTY so the dozen existing callers that ask about the service in
+    general -- /readyz, the coverage page, the torture suites -- keep their meaning. A
+    caller that is about to run a SPEC must pass the spec's symbol, or a SENSEX request
+    would be validated against NIFTY's wider window and then find no data.
+    """
+    per_symbol = TIER_WINDOWS.get(tier, TIER_WINDOWS["free"])
+    return per_symbol.get(symbol, per_symbol["NIFTY"])
+
+
+def symbol_windows(tier):
+    """{symbol: (from, to)} for every symbol this tier serves. For describe_coverage."""
+    return dict(TIER_WINDOWS.get(tier, TIER_WINDOWS["free"]))
 
 ENTRY_TIMES = ("09:15", "09:30", "11:00", "12:00", "12:30", "13:00", "14:00", "15:00", "EOD")
 # The same grid serves as exits. It is not an arbitrary restriction: contract_day holds a
@@ -167,7 +198,6 @@ def _as_date(value, label):
 
 def parse(raw, tier=None):
     """dict -> StrategySpec, or SpecError explaining exactly what is wrong."""
-    win_from, win_to = window_for(tier) if tier else (DATA_FROM, DATA_TO)
     if not isinstance(raw, dict):
         raise SpecError("spec must be an object")
 
@@ -187,8 +217,15 @@ def parse(raw, tier=None):
             f"{', '.join(sorted(STRUCTURE_PARAMS))}{extra}")
 
     symbol = raw.get("symbol", "NIFTY")
-    if symbol != "NIFTY":
-        raise SpecError(f"the free tier serves NIFTY only; {symbol!r} is not available")
+    if symbol not in SYMBOLS:
+        raise SpecError(f"{symbol!r} is not available. Served symbols: "
+                        f"{', '.join(SYMBOLS)}.")
+
+    # THE WINDOW IS RESOLVED HERE, not at the top of parse(), because it now depends on the
+    # symbol: SENSEX has no data before 2023-08-07 whatever the tier, so validating a
+    # SENSEX period against NIFTY's window would accept 2019 and then find nothing.
+    win_from, win_to = (window_for(tier, symbol) if tier
+                        else window_for(DEFAULT_TIER, symbol))
 
     params = raw.get("params") or {}
     if not isinstance(params, dict):

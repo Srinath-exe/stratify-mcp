@@ -18,6 +18,7 @@ Endpoints:
 
 NOT PRESENT, deliberately: any route that returns market data. Decision D3 — zero rows out.
 """
+import datetime as _dt
 import ipaddress
 import json
 import os
@@ -28,7 +29,8 @@ import urllib.parse
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
+                               RedirectResponse, Response)
 
 from engine import db as engine_db
 from engine import replay as engine_replay
@@ -41,7 +43,7 @@ from . import (admin as admin_console, appview, artifact as artifact_report, boo
                render, reports, site, store, tools)
 
 PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "stratify", "version": "1.0.0"}
+SERVER_INFO = {"name": "stratify", "version": "1.0.1"}
 
 # Readiness floor for the served window. The free tier covers 2025-07-01..2026-06-30, which
 # is 246 NSE trading days as built. The check is a FLOOR, not equality: a holiday
@@ -159,11 +161,31 @@ def _origin_allowed(request):
     return origin in ALLOWED_ORIGINS or host in ALLOWED_ORIGINS
 
 
+def _same_site_write(request):
+    """A cookie-authenticated POST must come from this site's own pages.
+
+    SameSite=Lax stops a cross-SITE form, but every *.aeon-labs.site host is the same
+    site, so a page on any sibling subdomain could still post here with the visitor's
+    cookie attached. Browsers send Origin on every POST, so requiring it to be the web
+    host closes that. A request with no Origin is not a browser, and a non-browser has no
+    ambient cookie to ride on."""
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    return origin.rstrip("/") in {PUBLIC_BASE_URL, str(request.base_url).rstrip("/")} - {""}
+
+
 async def _read_json(request):
     body = await request.body()
     if len(body) > MAX_BODY_BYTES:
         raise BodyTooLarge(f"request body exceeds {MAX_BODY_BYTES} bytes")
-    return json.loads(body)
+    # NaN and Infinity are not JSON. The engine's own finite checks already refuse them,
+    # so this is defence in depth: refuse them at the edge (QA, 11 Nov 2026).
+    return json.loads(body, parse_constant=_reject_constant)
+
+
+def _reject_constant(name):
+    raise ValueError(f"{name} is not valid JSON")
 
 
 def _rpc_error(request_id, code, message, data=None):
@@ -340,6 +362,32 @@ async def mcp_endpoint_keyed(url_key: str, request: Request):
 @app.post("/mcp")
 async def mcp_endpoint(request: Request):
     return await _serve_mcp(request, None)
+
+
+@app.get("/mcp")
+async def mcp_get(request: Request):
+    """A browser opening the endpoint URL, which people do to check it works.
+
+    Streamable HTTP lets a client GET this path for a server-sent event stream; this
+    server offers none, and the spec's answer to that is 405. That answer stays exactly as
+    it was for anything that is not a browser. A person who pasted the URL into a tab used
+    to read {"detail":"Method Not Allowed"} and conclude the server was down, so a page
+    asking for HTML gets one saying what the URL is for -- still a 405, with Allow: POST.
+    """
+    accept = request.headers.get("accept", "")
+    headers = {"Allow": "POST, OPTIONS"}
+    if "text/html" in accept and "text/event-stream" not in accept:
+        site = PUBLIC_BASE_URL or "https://stratify.aeon-labs.site"
+        return HTMLResponse(render.message_page(
+            "This is Stratify's MCP endpoint, and it is working",
+            "This address is for your AI client, not your browser. Paste it into ChatGPT, "
+            "Claude or any MCP client as a custom connector, or use the one-line setup for "
+            "Claude Code, Codex, Cursor and the rest. The client talks to it with POST "
+            "requests, which is why opening it in a tab shows only this page.",
+            "Setup lines for every client are on the docs page; signing in gives you a key.",
+            status_link=(f"{site}/docs", "How to connect a client")),
+            status_code=405, headers=headers)
+    return JSONResponse({"detail": "Method Not Allowed"}, status_code=405, headers=headers)
 
 
 async def _serve_mcp(request: Request, url_key):
@@ -557,9 +605,16 @@ def _handle(message, request, url_key=None):
         # the same point as CPU, is what stops a future tool that returns prices from
         # forgetting to be counted.
         cpu = time.process_time() - started
+        # A REFUSAL IS NOT A BACKTEST. A spec outside the served window, an unsupported
+        # symbol or a validation error never reached the engine and produced no result,
+        # and charging it against the hourly backtest allowance punishes the caller for
+        # the server saying no -- which is exactly what happens while a model is
+        # converging on a spec, so the one path that needs several tries is the one that
+        # runs out of quota. The CPU is still recorded, because it was still spent.
+        charged = billable and audit["outcome"] == "ok"
         store.record_usage(key["key_id"], key["account_id"], cpu,
                            price_points=context.get("price_points", 0),
-                           billable=billable)
+                           billable=charged)
         audit.update(cpu_seconds=cpu, price_points=context.get("price_points", 0),
                      backtest_id=(payload or {}).get("backtest_id")
                      if isinstance(payload, dict) else None,
@@ -656,6 +711,8 @@ async def new_key(request: Request):
     if presented is not None:
         account_id = presented["account_id"]
     elif session is not None:
+        if not _same_site_write(request):
+            return JSONResponse({"error": "cross-site request refused"}, status_code=403)
         account_id = session["account_id"]
     else:
         return JSONResponse(
@@ -675,8 +732,41 @@ async def new_key(request: Request):
     except quota.QuotaExceeded as exc:
         return JSONResponse({"error": exc.message, "limit": exc.limit}, status_code=429)
     key_id, secret = store.issue_key(account_id)
-    return {"key_id": key_id, "api_key": secret,
-            "warning": "Shown once. Not recoverable. Keys share the account's quota."}
+    return JSONResponse(
+        {"key_id": key_id, "api_key": secret, "mcp_url": _mcp_url(request),
+         "setup": site.setup_clients(_base_url(request), _mcp_url(request), secret),
+         "warning": "Shown once. Not recoverable. Keys share the account's quota."},
+        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/v1/me")
+async def whoami(request: Request):
+    """What the public landing page needs to know about its visitor, and nothing more.
+
+    The landing page is a static file, so it asks. Same-origin only by construction: no
+    CORS headers are sent, so another site cannot read the answer, and the session cookie
+    is SameSite so another site's request does not carry it in the first place."""
+    account = _account_from_cookie(request)
+    if account is None:
+        body = {"signed_in": False}
+    else:
+        live = [k for k in store.list_keys(account["account_id"]) if not k["revoked_at"]]
+        you = site.identity(account)
+        body = {"signed_in": True, "name": you["name"], "email": you["email"],
+                "tier": you["tier"], "active_keys": len(live),
+                "mcp_url": _mcp_url(request)}
+    return JSONResponse(body, headers={"Cache-Control": "no-store",
+                                       "Vary": "Cookie"})
+
+
+@app.get("/llms.txt", response_class=PlainTextResponse)
+async def llms_txt(request: Request):
+    """The setup guide for AI agents: a person pastes the site's link into an agent and
+    the agent reads this. Generated from the same setup list the docs render, so the two
+    cannot disagree."""
+    return PlainTextResponse(site.agent_markdown(_base_url(request), _mcp_url(request)),
+                             media_type="text/markdown; charset=utf-8",
+                             headers={"Cache-Control": "public, max-age=600"})
 
 
 @app.get("/v1/coverage")
@@ -934,6 +1024,8 @@ async def app_keys_new(request: Request):
     account, redirect = _require(request)
     if redirect:
         return redirect
+    if not _same_site_write(request):
+        return HTMLResponse("Cross-site request refused.", status_code=403)
     try:
         quota.check_key_issuance(account["account_id"])
     except quota.QuotaExceeded as exc:
@@ -941,7 +1033,9 @@ async def app_keys_new(request: Request):
                             status_code=429)
     _, secret = store.issue_key(account["account_id"])
     # Rendered here and nowhere else, ever. There is no route that can fetch it again.
-    return HTMLResponse(render.keys(site.keys_view(account, new_key=secret)))
+    return HTMLResponse(render.keys(site.keys_view(account, new_key=secret,
+                                                   base_url=_base_url(request))),
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.post("/app/keys/revoke", response_class=HTMLResponse)
@@ -949,6 +1043,8 @@ async def app_keys_revoke(request: Request):
     account, redirect = _require(request)
     if redirect:
         return redirect
+    if not _same_site_write(request):
+        return HTMLResponse("Cross-site request refused.", status_code=403)
     form = await request.form()
     key_id = (form.get("key_id") or "").strip()
     # Ownership is checked server side. The form field is caller-controlled, so without
@@ -1010,14 +1106,17 @@ async def fonts_css():
     global _FONTS_CSS
     if _FONTS_CSS is None:
         from pathlib import Path
-        f = Path(__file__).resolve().parent / "_fonts.css"
+        # The SITE's faces (Geist), not the report's: reportui.py inlines _fonts.css into
+        # every report and that file must stay the report's own.
+        f = Path(__file__).resolve().parent / "_site_fonts.css"
         _FONTS_CSS = f.read_text() if f.exists() else ""
     from fastapi.responses import Response
     return Response(_FONTS_CSS, media_type="text/css",
                     headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
-_ASSET_TYPES = {".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon"}
+_ASSET_TYPES = {".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon",
+                ".woff2": "font/woff2", ".js": "text/javascript; charset=utf-8"}
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
 
@@ -1040,6 +1139,54 @@ async def static_asset(name: str):
 @app.get("/favicon.ico")
 async def favicon():
     return _asset("favicon.ico")
+
+
+# Crawlability. Googlebot's only visit to this host fetched /robots.txt and got a 404,
+# then stopped -- a missing robots.txt is not a permissive one to a crawler deciding how
+# much of an unknown site to spend its budget on, and there was no sitemap to tell it
+# what existed. Both are static; neither is a security control, which is why the private
+# routes below are also gated by session checks rather than by being listed here.
+PUBLIC_PAGES = ["/", "/explore", "/pricing", "/docs", "/privacy", "/terms", "/contact"]
+
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+async def robots(request: Request):
+    base = _base_url(request)
+    return PlainTextResponse(
+        "User-agent: *\n"
+        "Allow: /$\n"
+        "Allow: /llms.txt\n"
+        + "".join(f"Allow: {p}\n" for p in PUBLIC_PAGES if p != "/")
+        # Nothing here is a secret, but a crawler indexing an API endpoint or a signed-in
+        # dashboard wastes its budget and puts URLs in search results that only ever
+        # return 401.
+        + "Disallow: /mcp\n"
+          "Disallow: /v1/\n"
+          "Disallow: /app/\n"
+          "Disallow: /dashboard\n"
+          "Disallow: /admin\n"
+          "Disallow: /auth/\n"
+          "Disallow: /login\n"
+          "Disallow: /logout\n"
+          "Disallow: /static/\n"
+          f"\nSitemap: {base}/sitemap.xml\n",
+        media_type="text/plain")
+
+
+@app.get("/sitemap.xml")
+async def sitemap(request: Request):
+    base = _base_url(request)
+    today = _dt.date.today().isoformat()
+    urls = "".join(
+        f"  <url><loc>{base}{p}</loc><lastmod>{today}</lastmod>"
+        f"<changefreq>weekly</changefreq>"
+        f"<priority>{'1.0' if p == '/' else '0.7'}</priority></url>\n"
+        for p in PUBLIC_PAGES)
+    return Response(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        + urls + "</urlset>\n",
+        media_type="application/xml")
 
 
 @app.get("/privacy", response_class=HTMLResponse)
@@ -1508,6 +1655,8 @@ async def revoke_connection(request: Request):
     account = _account_from_cookie(request)
     if account is None:
         return RedirectResponse("/", status_code=302)
+    if not _same_site_write(request):
+        return HTMLResponse("Cross-site request refused.", status_code=403)
     form = dict(await request.form())
     client_id = form.get("client_id", "")
     n = 0

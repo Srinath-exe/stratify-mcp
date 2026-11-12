@@ -277,6 +277,17 @@ CSS = """
 .cv-loz .v{font-family:var(--font-mono);font-size:clamp(2.6rem,5vw,3.6rem);line-height:1;
   letter-spacing:-.025em;font-weight:500;margin-top:14px}
 .cv-loz .s{font-size:.82rem;opacity:.68;margin-top:10px}
+/* optional two-up split inside a lozenge: the headline number stays the total,
+   and the parts that make it up sit underneath, each labelled. */
+.cv-loz .sp{display:grid;grid-template-columns:1fr 1fr;margin-top:20px;padding-top:15px;
+  border-top:1px solid rgba(19,19,19,.22)}
+.cv-loz .sp>div+div{padding-left:18px;border-left:1px solid rgba(19,19,19,.22)}
+.cv-loz .sp .l{font-family:var(--font-mono);font-size:.6rem;letter-spacing:.1em;
+  text-transform:uppercase;opacity:.62}
+.cv-loz .sp .n{font-family:var(--font-mono);font-size:clamp(1.15rem,2.4vw,1.5rem);
+  font-weight:500;letter-spacing:-.015em;line-height:1.1;margin-top:5px}
+.cv-loz .sp .m{font-size:.7rem;opacity:.6;margin-top:3px}
+.cv-fl .sp,.cv-fl .sp>div+div{border-color:var(--stroke)}
 .cv-up{background:var(--brand-green)} .cv-dn{background:var(--brand-pink)}
 .cv-fl{background:var(--surface-2);color:var(--fg)}
 .cv-f{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;

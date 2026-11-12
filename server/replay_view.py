@@ -491,9 +491,21 @@ function solveIV(legs, spot, T, target){
   for(var i=0;i<60;i++){ var m=0.5*(lo+hi), f=posValue(legs,spot,T,m)-target;
     if((f>0)===(flo>0)){ lo=m; flo=f } else hi=m }
   return 0.5*(lo+hi); }
+/* Time to expiry is TRADING time: only 09:15-15:30 on trading days counts, weekends and holidays
+   are zero length, a year is 252 sessions. The trading days are the days the index series has
+   bars for (the expiry day always counts), so no holiday calendar is needed here. */
+var SESSION_S = 22500, YEAR_TSEC = 252*SESSION_S, OPEN_S = 9*3600+15*60, CLOSE_S = 15*3600+30*60;
+var TDAYS = (function(){ var s = {}; for(var i=0;i<SP.n;i++) s[Math.floor(SP.time[i]/86400)] = 1; return s; })();
 function yearsTo(expiry, nowSec){
-  var e = Date.UTC(+expiry.slice(0,4),+expiry.slice(5,7)-1,+expiry.slice(8,10),15,30)/1000;
-  return Math.max(e-nowSec,0)/(365*24*3600); }
+  var ed = Math.floor(Date.UTC(+expiry.slice(0,4),+expiry.slice(5,7)-1,+expiry.slice(8,10))/86400000);
+  var e = ed*86400 + CLOSE_S;
+  if(!(e > nowSec)) return 0;
+  var tot = 0;
+  for(var day = Math.floor(nowSec/86400); day <= ed; day++){
+    if(!(TDAYS[day] || day === ed)) continue;
+    var lo = Math.max(day*86400 + OPEN_S, nowSec), hi = Math.min(day*86400 + CLOSE_S, e);
+    if(hi > lo) tot += hi - lo; }
+  return tot/YEAR_TSEC; }
 
 /* ------------------------------------------------------------------ charts */
 var base = {
@@ -871,7 +883,7 @@ function drawPayoff(tr, spot, lots, nowSec, premNow){
   /* Inside the last few hours the two curves are the same curve, and a vol solved from a
      position with minutes of life left is noise -- it read "1% vol" on the final bar of
      every trade. These are 2-DTE condors, so this is not an edge case. */
-  var NEAR = 0.25/365, expiring = T <= NEAR;
+  var NEAR = 2*3600/YEAR_TSEC, expiring = T <= NEAR;      /* the last two trading hours */
   var iv = (!expiring && premNow!=null) ? solveIV(tr.legs, spot, T, premNow) : null;
 
   var N=200, xs=[], ye=[], yn=[];
@@ -1596,11 +1608,13 @@ def render(payload, track, capital=1_000_000, deploy=0.10, report_url=None, titl
   <div class="two">
     <div class="chartbox">
       <div class="chead">
-        <div class="ctitle">Combined premium</div>
-        <div class="lg"><span>this trade &middot; points to close, all
-          {n_legs} legs &middot; hover for the P&amp;L at that moment</span></div>
+        <div class="ctitle">This trade</div>
+        <div class="lg"><span>{n_legs} legs &middot; result at exit</span></div>
       </div>
-      <div id="prem"></div>
+      <div id="prem" hidden></div>
+      <p style="margin:18px 4px 0;line-height:1.6;opacity:.75">Option prices never leave the
+        server, so this replay shows no minute-by-minute premium. Each trade&rsquo;s entry,
+        exit and P&amp;L are in the table below, exactly as the backtest booked them.</p>
     </div>
     <div class="chartbox">
       <div class="chead">
@@ -1648,12 +1662,12 @@ def render(payload, track, capital=1_000_000, deploy=0.10, report_url=None, titl
         <p><strong>{spot.get("n", 0):,} index bars</strong> at {base_tf}-minute base
         resolution, one continuous series; coarser candles are aggregated in the browser,
         so changing the timeframe re-fetches nothing.</p>
-        <p>Every series on this page is either the index &mdash; which is not the asset and
-        is published in full &mdash; or a signed sum across {n_legs} legs of a position,
-        which no amount of reconstructs a single contract from.{side_note} The payoff at
-        expiry is drawn from the strikes and the net credit alone; the &ldquo;now&rdquo;
-        curve is priced off one volatility solved from the position&rsquo;s own combined
-        premium, and is labelled modelled because it is.</p>
+        <p>The only series on this page is the index, which is not the asset and is
+        published in full. Nothing per minute about the options is released: a combined
+        premium over several legs can be solved back to single contracts by combining
+        backtests, so it is not shown at all. Each trade carries its strikes, sides, entry
+        credit and booked result, as the backtest reported them.{side_note} The payoff at
+        expiry is drawn from the strikes and the net credit alone.</p>
         <p><strong>Not investment advice.</strong> This is a replay of a backtest, not a
         recording of a live account. Position sizes are a model: real margin is set by the
         exchange and your broker and moves intraday. A position&rsquo;s terminal value is

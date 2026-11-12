@@ -27,10 +27,10 @@ from engine import spec as spec_mod, strategy
 FIELD_WORDS = {
     "pnl_pts":            ("position P&L", " pts"),
     "pnl_rupees":         ("position P&L", ""),
-    "pnl_pct_of_credit":  ("P&L against the credit taken in", "%"),
-    "pnl_pct_of_max":     ("P&L against the most it could make", "%"),
+    "pnl_frac_of_credit": ("P&L against the credit taken in", "%"),
+    "pnl_frac_of_max":    ("P&L against the most it could make", "%"),
     "combined_premium":   ("cost to close the position", " pts"),
-    "credit_kept_pct":    ("credit still unspent", ""),
+    "credit_kept_frac":   ("credit still unspent", ""),
     "leg_mark":           ("the leg's price", " pts"),
     "leg_mark_mult":      ("the leg's price against what it opened at", "×"),
     "leg_mark_delta":     ("the leg's move", " pts"),
@@ -216,13 +216,20 @@ def cond_words(c, short=False):
         return f"{who} {verb} {_num(abs(b))}{unit} {tail}"
 
     # --- P&L, said as profit or as loss -------------------------------------
-    base = ("credit" if field == "pnl_pct_of_credit"
-            else "the most it could make" if field == "pnl_pct_of_max" else None)
+    #
+    # THE THRESHOLD IS A FRACTION AND THE SENTENCE IS A PERCENTAGE, so it has to be
+    # converted. It was printed straight through: a target of 0.6 rendered as "0.6% of
+    # credit" and a stop at the whole credit as "1% of credit". Both read as thresholds
+    # that would fire instantly, on a card whose job is to tell a reader what the
+    # strategy actually does -- and the card sat above a run in which neither rule had
+    # fired at all.
+    base = ("credit" if field == "pnl_frac_of_credit"
+            else "the most it could make" if field == "pnl_frac_of_max" else None)
     if field.startswith("pnl_") and base and cmp_ in ("lte", "lt") and float(bound) < 0:
-        b = _num(abs(float(bound)))
+        b = _num(abs(float(bound)) * 100)
         return f"{b}% of {base}" if short else f"the loss reaches {b}% of {base}"
     if field.startswith("pnl_") and base and cmp_ in ("gte", "gt") and float(bound) > 0:
-        b = _num(bound)
+        b = _num(float(bound) * 100)
         return f"{b}% of {base}" if short else f"profit reaches {b}% of {base}"
 
     words, unit = FIELD_WORDS.get(field) or _indicator_words(field)

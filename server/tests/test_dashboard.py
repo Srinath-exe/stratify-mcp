@@ -4,6 +4,7 @@ The dashboard is where a human creates the credential an agent will then use, so
 things worth testing are the boundaries: a key is shown once, a session is not a key, and
 one account cannot touch another's keys.
 """
+import conftest as _conftest
 import re
 import sys
 import tempfile
@@ -78,11 +79,12 @@ def test_dashboard_shows_usage_after_a_backtest(client):
     call, so reading the coverage moved the number that tells a user how many runs they
     have left."""
     _, key = signup(client)
-    client.post("/mcp", headers={"Authorization": f"Bearer {key}"},
-                json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                      "params": {"name": "run_backtest", "arguments": {"spec": {
-                          "structure": "iron_fly", "entry_time": "09:30",
-                          "params": {"pct_width": 1.5, "entry_dte": 4}}}}})
+    _conftest.skip_if_the_database_is_why_this_failed(client.post(
+        "/mcp", headers={"Authorization": f"Bearer {key}"},
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+              "params": {"name": "run_backtest", "arguments": {"spec": {
+                  "structure": "iron_fly", "entry_time": "09:30",
+                  "params": {"pct_width": 1.5, "entry_dte": 4}}}}}).json())
     page = client.get("/dashboard").text
     assert "Backtests" in page and "CPU seconds" in page
     assert re.search(r'Backtests</div>\s*<div class="v">1<', page)

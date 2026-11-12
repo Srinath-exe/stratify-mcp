@@ -29,79 +29,69 @@ restating it and going stale.
 # --------------------------------------------------------------------------- ambient
 
 SERVER_INSTRUCTIONS = """\
-Backtesting for Indian index options on real 1-minute NIFTY data. Results are computed
+Backtesting for Indian index options on real 1-minute NIFTY and SENSEX data. The two are
+different contracts: SENSEX trades a 100-point strike grid against NIFTY's 50, and its
+options begin 2023-08-07, so a percent-offset or an entry_dte reasoned about on one is
+not automatically right on the other. Call describe_coverage for the window per symbol.
+Results are computed
 server-side. What comes back is the result of a backtest — including the prices of the
 contracts that backtest actually traded — never the option chain: there is no endpoint for
 a strike a strategy did not trade, a minute it did not trade at, a range, or an export.
 
-TWO CADENCES, and picking the wrong one silently answers a different question:
-  cadence 'weekly' (default) enters ONCE per expiry, on the day matching entry_dte —
+Two cadences, which answer different questions:
+  cadence 'weekly' (default) enters once per expiry, on the day matching entry_dte —
     about 58 trades a year.
-  cadence 'daily' enters EVERY trading session, on whichever expiry is nearest —
-    about 246 a year. Use it for anything a user describes as "every day".
-Set exit_time for a clock exit that squares the position off the SAME session. So
+  cadence 'daily' enters every trading session, on whichever expiry is nearest —
+    about 246 a year. This is the one that matches a description like "every day".
+exit_time sets a clock exit that squares the position off in the same session, so
 "buy at 11, sell at 2, every day" is cadence 'daily', entry_time '11:00',
-exit_time '14:00' — it is expressible, and you should not tell a user it is not.
-Without exit_time a position is held until a stop, a target, or expiry settlement.
+exit_time '14:00'. Without exit_time a position is held until a stop, a target, or
+expiry settlement.
 
-SHOW THE RESULT, DO NOT NARRATE IT. After a backtest, call build_report and publish the
-returned document as an artifact (Claude), a canvas document (ChatGPT, Gemini) or an .html
-file (CLI) BY DEFAULT. Do not wait to be asked. A person reading a wall of numbers in chat
-learns less than the same person looking at an equity curve, and the report already
-contains the honesty panel, the charts and the trade table, laid out and checked.
-  Publish it WITHOUT asking permission first — offering costs a round trip and the answer
-  is always yes.
-  Two exceptions. While you are sweeping several variants in a row, hold off and publish
-  once, for the one worth keeping — ten reports nobody opens is worse than none. And if the
-  user asked a narrow question ("what was the win rate?"), answer it in a sentence.
-  Never redraw the report's figures yourself, and never summarise it into your own chart
-  code. Publish it verbatim.
-  If build_report is not in your tool list, your connection predates it: give the user the
-  report link from the result instead, which needs no tool call at all.
+Every backtest result includes a report_url: a shareable page carrying the equity curve,
+the honesty panel and the trade table. build_report creates that page for a stored
+backtest and returns its URL.
 
-Before you build a spec, call describe_coverage — it reports the exact window, lot sizes
-and structures available to this key, and those change. Call explain_methodology to
-understand how a result is produced before you trust it.
+describe_coverage reports the exact window, lot sizes and structures available to this
+key, which change between tiers and over time. explain_methodology describes how a result
+is produced and what each check can and cannot establish.
 
-Four things about this market that are commonly assumed wrong, and that will make your
-analysis wrong if you assume them here:
+Backtest results are saved to the user's account. list_strategies returns the ones that
+passed the out-of-sample and walk-forward checks, ranked by worst walk-forward fold rather
+than by P&L, because total return is what a parameter sweep maximises by construction.
+
+Five things about this market are commonly assumed wrong, and each one changes the
+numbers:
 
 1. NIFTY weekly expiry is TUESDAY for most of this window, not Thursday. It changed
    around 2025-09-02. Holidays shift it earlier.
-2. The lot size is NOT constant. It is 75 for expiries through 2025-12-30 and 65 from
+2. The lot size is not constant. It is 75 for expiries through 2025-12-30 and 65 from
    2026-01-06. Every rupee figure depends on which regime a trade fell in.
 3. Settlement is the average of the underlying over the final 30 minutes — not the 15:29
    close, and not the option's last traded price.
-4. One year of weekly expiries is about 50 trades. That is near the floor of what any
-   ratio can be computed on. Treat every result from this window as provisional. A daily
-   cadence gives ~246 instead — more sample, but they overlap heavily in what drives
-   them, so it is not five times the independent evidence.
-5. The served calendar includes 2026-02-01, a SUNDAY, because NSE ran a full session for
-   the Union Budget. A daily cadence trades it. Do not treat it as bad data.
+4. One year of weekly expiries is about 50 trades, near the floor of what any ratio can
+   be computed on, so a result from this window is provisional. A daily cadence gives
+   ~246 instead, but they overlap heavily in what drives them, so it is not five times
+   the independent evidence.
+5. The served calendar includes 2026-02-01, a Sunday, because NSE ran a full session for
+   the Union Budget. A daily cadence trades it; it is not bad data.
 
-YOUR ACCOUNT REMEMBERS. Every call is logged, and a result that clears the evidence bar
-is kept in a per-account strategy book. Call list_strategies to answer "what has worked
-for me so far" without re-running anything — it is ranked by WORST walk-forward fold, not
-by P&L, because total return is what a parameter sweep maximises by construction.
+This is an educational backtesting tool. It reports historical evidence and the limits of
+that evidence, and it is not investment advice.
 
-Report evidence and its limits. This is an educational backtesting tool, not investment
-advice.
-
-"NOT ADVICE" IS A BEHAVIOUR, NOT A DISCLAIMER. A caveat does not cancel an instruction that
-follows it, and a persona eval caught exactly that: an assistant wrote careful warnings
-about sample size and cost drag, then a section headed "what I'd actually do" telling a
-novice to trade one lot. Everything before it was true and none of it mattered. So, whatever
-disclaimers you attach, do not produce:
+A disclaimer does not cancel a recommendation that follows it. A persona eval caught
+exactly that: careful warnings about sample size and cost drag, followed by a section
+headed "what I'd actually do" telling a novice to trade one lot. Everything before it was
+true and none of it mattered. So this service does not produce, and its results do not
+support:
 
   - a position to enter — specific strikes, expiry and entry time presented as a plan
   - a position size, lot count, or capital allocation
   - a day to act on, or a "start with this" instruction
   - "what I would do", "if I were you", or a recommendation in any other grammar
 
-Describe what the backtest showed, state what it cannot support, and leave the decision
-with the person. When someone asks what to trade, the honest answer names what the evidence
-does and does not establish and stops there — that is a complete answer, not a refusal, and
-it does not need an apology.
+Describing what the backtest showed, stating what it cannot support, and leaving the
+decision with the person is a complete answer to "what should I trade", not a refusal.
 """
 
 
@@ -330,7 +320,24 @@ TOPICS = {
         "30 minutes, which is NSE's own convention and is neither the 15:29 close nor the "
         "option's last print. exit_time 'EOD' on a 0-DTE position therefore SETTLES rather "
         "than reading the 15:29 tick — that is the same event, priced the way NSE prices "
-        "it."),
+        "it.\n\n"
+        # The overview stopped above, so the most common methodology question -- how are
+        # costs and margin handled, and when is a ratio refused -- could not be answered
+        # from the default topic at all. Each line points at the topic that expands it.
+        "WHAT IS SUBTRACTED, AND WHAT IS WITHHELD.\n"
+        "  Slippage is an ASSUMPTION, not a measurement: there is no order book behind "
+        "this data, so a fixed per-leg allowance is applied and labelled as assumed "
+        "wherever it appears. Topic: 'slippage'.\n"
+        "  Charges are real and per leg — brokerage, exchange transaction charges, STT, "
+        "stamp duty, the SEBI turnover fee and GST, computed on the legs actually traded "
+        "rather than as a blanket percentage. Topic: 'costs'.\n"
+        "  Margin is SPAN-calibrated from live broker quotes and widens with spread "
+        "width. For a naked short it was calibrated recently and applied backwards, so "
+        "return-on-margin is optimistic by an unknown amount in a shock. Topic: "
+        "'margin'.\n"
+        "  Ratios are WITHHELD below 30 trades: Sharpe, Calmar and profit factor are not "
+        "reported at all at a smaller sample, because at that size they are noise with a "
+        "decimal point rather than an estimate. Topic: 'sample_size'."),
 
     "intraday": (
         "HOW TO EXPRESS AN INTRADAY STRATEGY, and what changes when you do.\n\n"
@@ -418,7 +425,13 @@ TOPICS = {
 
     "contract_spec": (
         "MEASURED FROM THE SERVED DATA, and the three most common wrong assumptions.\n\n"
-        "EXPIRY DAY. NIFTY weekly expiry moved from Thursday to TUESDAY around 2025-09-02. "
+        "EXPIRY DAY, AND IT IS NOT THE SAME FOR BOTH SYMBOLS. SENSEX weekly expiry moved "
+        "from FRIDAY to TUESDAY in January 2025 — the last Friday expiry is 2025-01-03 and "
+        "the first Tuesday is 2025-01-07 — and its lot size changed from 10 to 20 in the "
+        "same week. SENSEX lot size is measured PER EXPIRY, not by date range, because the "
+        "monthly contract listed before the change kept lot 10 after it: 2025-01-28 is lot "
+        "10 while every weekly around it is 20. A date rule gets that expiry wrong by 2x.\n\n"
+        "NIFTY weekly expiry moved from Thursday to TUESDAY around 2025-09-02. "
         "In the free window 40 of 55 expiries fall on Tuesday, 10 on Thursday (mostly "
         "before the change), 4 on Monday and 1 on Wednesday — the Monday and Wednesday "
         "cases are holiday shifts. A strategy reasoned about as 'Thursday expiry' will "
@@ -428,7 +441,10 @@ TOPICS = {
         "rupee figure, part-way through the window. It is read per expiry from NSE "
         "bhavcopy, never hard-coded. Comparing rupee P&L across the boundary compares two "
         "different position sizes.\n\n"
-        "STRIKE STEP is 50 for NIFTY weeklies. Because percent-distance targets usually "
+        "STRIKE STEP is 50 for NIFTY weeklies and 100 for SENSEX. That ratio matters more "
+        "than it looks: SENSEX trades near 85,000 against NIFTY's 26,000, so one SENSEX "
+        "strike is about 0.12 % of spot and one NIFTY strike about 0.19 % — a 1.5 % "
+        "offset lands 13 strikes out on SENSEX and 8 on NIFTY. Because percent-distance targets usually "
         "land between listed strikes, ties are broken FURTHER OUT OF THE MONEY — higher "
         "strike for CE, lower for PE — so the same spec always returns the same strikes.\n\n"
         "ATM means the nearest listed strike to spot. Some tools define ATM by CE/PE price "

@@ -44,7 +44,7 @@ def trade(legs=None, n=6, credit=40.0):
             "net_points": 10.0, "margin_points": 250.0, "lot_size": 75,
             "charges_rupees": 120.0, "pnl_rupees": 630.0,
             "i0": 0, "i1": n - 1,
-            "p": replay._quant([b["p"] for b in bars])}
+            "p": []}   # no per-minute premium is ever released (11 Nov 2026)
 
 
 def track(legs=None, n=6, credit=40.0, bucket=1):
@@ -85,6 +85,23 @@ def test_a_trade_carries_no_field_the_module_did_not_define():
     leaky["trades"][0]["leg_marks"] = [61.25, 12.0]
     with pytest.raises(AssertionError, match="unexpected fields"):
         replay.release_audit(leaky)
+
+
+def test_a_per_minute_premium_series_is_refused():
+    """Any per-minute premium is solvable to single contracts across two backtests
+    (K1+K2 and K1-K2 sum to twice K1), so the audit refuses a non-empty series outright."""
+    leaky = track()
+    leaky["trades"][0]["p"] = [800, 790, 785]
+    with pytest.raises(replay.NotReleasable, match="per-minute premium"):
+        replay.release_audit(leaky)
+
+
+def test_two_legs_on_one_contract_count_as_one_contract():
+    """The QA exploit: buy the same CE twice and the 'combined' value is twice its price."""
+    same = [{"action": "BUY", "option_type": "CE", "strike": 24500, "expiry": "2025-09-02"}] * 2
+    pair = [same[0], dict(same[0], option_type="PE")]
+    assert replay._distinct_contracts(same) == 1
+    assert replay._distinct_contracts(pair) == 2
 
 
 def test_the_audit_reports_a_zero_price_release():
@@ -149,10 +166,10 @@ def test_expiries_are_marked_by_index_into_the_continuous_series():
 
 
 def test_a_trade_is_a_span_within_the_one_index_series():
-    """The chart is continuous now; a trade is i0..i1 with its premium aligned bar for bar.
-    A mismatch here would draw the position over the wrong candles."""
+    """The chart is continuous; a trade is the span i0..i1 of the one index series, and it
+    carries no per-minute premium at all (11 Nov 2026)."""
     t = trade(n=12)
-    assert len(t["p"]) == t["i1"] - t["i0"] + 1
+    assert 0 <= t["i0"] <= t["i1"] and t["p"] == []
 
 
 def test_the_exit_marker_is_kept_as_a_sparse_index():
