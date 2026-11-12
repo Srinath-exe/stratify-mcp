@@ -5,7 +5,7 @@
 <h1 align="center">Stratify</h1>
 
 <p align="center">
-  <strong>Describe an options strategy in plain words. Get it backtested on real 1-minute NIFTY data — with an honest answer about how much to trust the result.</strong>
+  <strong>Describe an options strategy in plain words. Get it backtested on real 1-minute NIFTY and SENSEX option data — with an honest answer about how much to trust the result.</strong>
 </p>
 
 <p align="center">
@@ -40,8 +40,10 @@ data it was not fitted on.
 
 This repository is the server behind the hosted service at
 **[stratify.aeon-labs.site](https://stratify.aeon-labs.site)**, published so you can read
-exactly how every number you are shown was produced. The market data is not here and never
-leaves the service: you send a strategy, you get results.
+exactly how every number you are shown was produced. The backtest runs on that server, not
+inside your assistant, against 372 million one-minute option bars: about 289 million for
+NIFTY and 83 million for SENSEX. The market data is not here and never leaves the service:
+you send a strategy, you get results.
 
 ## Connect in one minute
 
@@ -49,7 +51,7 @@ leaves the service: you send a strategy, you get results.
 
 | Client | Where | Paste |
 |---|---|---|
-| **ChatGPT** | Settings → Plugins → *Create* (Developer mode on) | `https://stratify-mcp.aeon-labs.site/mcp` |
+| **ChatGPT** | Stratify is a published plugin: search for it, or Settings → Plugins → *Create* (Developer mode on) | `https://stratify-mcp.aeon-labs.site/mcp` |
 | **Claude** (claude.ai / Desktop) | Settings → Connectors → *Add custom connector* | `https://stratify-mcp.aeon-labs.site/mcp` |
 | **Gemini** (web / mobile) | Settings → Connected apps → *custom app* | `https://stratify-mcp.aeon-labs.site/mcp` |
 
@@ -98,7 +100,28 @@ result = StratifyClient(api_key="sk_live_...").run_backtest({...})   # returns p
 [latest release](https://github.com/Srinath-exe/stratify-mcp/releases/latest), double-click,
 paste your key once.
 
-Free tier: NIFTY, one year of 1-minute data, 100 backtests an hour, 1,000 other calls an hour.
+## What it covers
+
+| | Free | Paid |
+|---|---|---|
+| **NIFTY** options, 1-minute | 1 Jul 2025 – 30 Jun 2026 | 1 Jan 2019 – 30 Jun 2026 |
+| **SENSEX** options, 1-minute | 1 Jul 2025 – 30 Jun 2026 | 7 Aug 2023 – 30 Jun 2026 |
+| Strategy features | every one | every one |
+
+SENSEX options do not exist in the archive before 7 Aug 2023, so no tier claims earlier
+history for it; weekly SENSEX expiries start 31 May 2024 and the months before that are
+monthly contracts. The two indices are different contracts with different lot sizes and
+strike grids, and each is served from its own database (`engine/db.py`, `SYMBOL_DB`).
+
+**One gap, stated plainly:** the open strategy protocol below (legs + rules) runs on NIFTY
+only for now. SENSEX is served through the preset structures (`short_strangle`,
+`iron_condor`, `iron_fly`, `credit_spread`, `long_option`), because the open form's entry
+gates read a daily market-state table that exists only in NIFTY's database so far.
+
+Free tier limits: 100 backtests an hour and 1,000 other calls an hour, per account. The
+windows are a property of the tier (`engine/spec.py`, `TIER_WINDOWS`), enforced twice: by
+the spec validator and by a ClickHouse row policy (`data/schema/70_tiers.sql`,
+`71_tiers_symbol.sql`), so a bug in one cannot widen what a free key can read.
 
 ## What comes back
 
@@ -122,7 +145,9 @@ The service never calls a strategy good. It shows you what happened and how frag
 
 A strategy is **legs + rules**, not a preset. Any number of legs on any expiry; strikes by
 delta, premium, points or percent; conditions on the position, on the legs, or on the
-index; actions that close, roll or open. This exact spec parses and runs:
+index; actions that close, roll or open. Thresholds on P&L are fractions, and the field
+names say so (`*_frac`); the older `*_pct` names still parse and mean the same fraction.
+This exact spec parses and runs:
 
 ```json
 {
@@ -135,7 +160,7 @@ index; actions that close, roll or open. This exact spec parses and runs:
     "when": {"all": [{"vix_prev_close": {"gte": 13}}, {"rsi_14": {"lt": 70}}]}
   },
   "rules": [
-    {"when": {"pnl_pct_of_credit": {"gte": 0.6}}, "then": "close"},
+    {"when": {"pnl_frac_of_credit": {"gte": 0.6}}, "then": "close"},
     {"when": {"leg_mark_mult": {"gte": 2.0, "leg": 0}},
      "then": {"roll": {"legs": [0], "to": {"delta_near": 0.20}}}, "max_times": 1}
   ],
@@ -148,7 +173,7 @@ index; actions that close, roll or open. This exact spec parses and runs:
 | Strike selection | `delta_near`, `premium_near`, `pct_offset`, `points_offset`, `atm`, `strike`, `from_leg` |
 | Entry gates (market) | `vix`, `vix_prev_close`, `vix_change_pct`, `prev_day_move_pct`, `gap_pct`, `realised_vol_20d`, `day_of_week` |
 | Entry gates (index indicators) | `rsi_N`, `close_vs_sma_N_pct`, `close_vs_ema_N_pct`, `ema_F_vs_S_pct`, `sma_F_vs_S_pct` — N from 2 to 250, all on the **previous** close |
-| Position conditions | `pnl_pct_of_credit`, `leg_mark_mult`, `combined_premium`, days/minutes to expiry, clock time |
+| Position conditions | `pnl_frac_of_credit` (0.6 = 60% of the credit), `pnl_frac_of_max`, `credit_kept_frac`, `leg_mark_mult`, `combined_premium`, `drawdown_from_peak`, days/minutes to expiry, clock time |
 | Actions | `close`, `close_legs`, `open`, `roll`, `close_and_open` |
 | Portfolio | `stop_after_losses`, `stop_after_drawdown_pct`, `skip_after_loss`, `max_trades`, `stop_after_profit_pct`, `resume_after_days` |
 
@@ -168,14 +193,17 @@ You never write this JSON by hand: the assistant does, from your sentence. The
 | `build_report` | Turns a stored backtest into a finished, shareable report page | creates a page |
 | `describe_coverage` | Symbols, date window, resolution, structures, gates this deployment accepts | no |
 | `explain_methodology` | Entry pricing, settlement, costs, margin, slippage, liquidity, overfitting, changelog | no |
+| `list_backtests` | Your recent backtests, newest first | no |
 | `get_backtest` | Retrieve a stored result by id | no |
 | `list_strategies` | Your kept shortlist, ranked by worst walk-forward fold | no |
 | `search` · `fetch` | Retrieval in the single-string form ChatGPT deep research requires | no |
 | `submit_feedback` · `my_feedback` | Report a wrong answer with repro context attached automatically; see its status | files a report |
 
-All tools carry `title`, `readOnlyHint`, `destructiveHint` and `openWorldHint`. Nothing is
+All tools carry `title`, `readOnlyHint`, `destructiveHint` and `openWorldHint`, declare
+their auth scheme in `_meta.securitySchemes`, and publish an output schema. Nothing is
 destructive and nothing reaches outside the service — no broker, no third-party API, no
-order placement of any kind.
+order placement of any kind. Opening the endpoint URL in a browser shows a page saying what
+it is for; clients get the protocol's answer (405, `Allow: POST`).
 
 ## For agents and crawlers
 
@@ -188,10 +216,10 @@ auth            OAuth 2.1 (PKCE S256, dynamic client registration, CIMD)
 discovery       https://stratify-mcp.aeon-labs.site/.well-known/oauth-protected-resource/mcp
 issuer          https://stratify.aeon-labs.site
 open without auth   initialize, tools/list, describe_coverage, explain_methodology, search, fetch
-needs auth          run_backtest, build_report, get_backtest, list_strategies, submit_feedback, my_feedback
+needs auth          run_backtest, build_report, list_backtests, get_backtest, list_strategies, submit_feedback, my_feedback
 unauthenticated tools/call → HTTP 401 + WWW-Authenticate (never a 200 wrapping an error)
 stdio bridge    npx stratify-mcp        python client   pip install stratify-mcp
-market          NIFTY index options, NSE (India); 1-minute; free tier = one year
+market          NIFTY (NSE) and SENSEX (BSE) index options, India; 1-minute; free tier = one year of both
 limits (free)   100 backtests/hour, 1,000 other calls/hour, per account
 data egress     none — results only, never rows
 ```
@@ -241,7 +269,7 @@ the tests that need one and says so.
 
 ```bash
 pip install -r requirements-dev.txt
-python3 -m pytest engine/tests server/tests -q -rs   # 667 tests; 212 skip without the database
+python3 -m pytest engine/tests server/tests -q -rs   # 689 tests; 210 skip without the database
 cp .env.example .env                                  # then fill it in
 ./server/run.sh
 ```

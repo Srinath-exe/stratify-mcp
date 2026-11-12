@@ -43,7 +43,7 @@ from . import (admin as admin_console, appview, artifact as artifact_report, boo
                render, reports, site, store, tools)
 
 PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "stratify", "version": "1.0.1"}
+SERVER_INFO = {"name": "stratify", "version": "1.0.2"}
 
 # Readiness floor for the served window. The free tier covers 2025-07-01..2026-06-30, which
 # is 246 NSE trading days as built. The check is a FLOOR, not equality: a holiday

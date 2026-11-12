@@ -11,6 +11,11 @@ point at the methodology version.
 
 ## [Unreleased]
 
+## [server 1.0.2] — 2026-11-12
+
+The server's version is the one it reports in `serverInfo`; the npm and PyPI clients keep
+their own (`v*` tags). This entry covers everything since the 0.1.2 client release.
+
 ### Added (server sync, 2026-11-11)
 - **SENSEX**, served from its own database (`engine/db.py` `SYMBOL_DB`), with per-symbol
   tier windows: SENSEX has no options before 2023-08-07, so no tier claims earlier history.
@@ -31,7 +36,7 @@ point at the methodology version.
 - Every service-DB connection was born mid-transaction after the owner backfill, which made
   `/readyz` answer 503 while the database was writable. It now commits the migration.
 
-### Added
+### Added (since 0.1.2)
 - **OAuth 2.1 authorization server** (`server/mcpauth.py`): PKCE S256 required, dynamic
   client registration, client-ID metadata documents, exact redirect matching with the
   RFC 8252 loopback exception, single-use codes with replay detection, refresh rotation
