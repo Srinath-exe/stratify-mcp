@@ -51,11 +51,14 @@ def bias_names():
 
 def _daily(entry_minute):
     """Tier-scoped wrapper. See _daily_cached for why the tier has to be in the key."""
-    return _daily_cached(entry_minute, db.current_user.get())
+    return _daily_cached(entry_minute, db.current_user.get(), db.database())
 
 
 @functools.lru_cache(maxsize=32)
-def _daily_cached(entry_minute, ch_user):
+def _daily_cached(entry_minute, ch_user, database=None):
+    # `database` is part of the key for the same reason as ch_user: it selects NIFTY or
+    # SENSEX. Without it a SENSEX gate could be decided on NIFTY's series, whichever
+    # request warmed the cache first (security review 13 Nov 2026).
     """Daily spot OHLC in two forms: the full session, and the session truncated at
     `entry_minute`. Both come from spot_1min, which covers all 246 days with real
     OHLC — the old close-only spot series could not have computed six of these signals.
@@ -91,11 +94,11 @@ def _daily_cached(entry_minute, ch_user):
 
 
 def frame_at(entry_date, entry_minute):
-    return _frame_at_cached(entry_date, entry_minute, db.current_user.get())
+    return _frame_at_cached(entry_date, entry_minute, db.current_user.get(), db.database())
 
 
 @functools.lru_cache(maxsize=4096)
-def _frame_at_cached(entry_date, entry_minute, ch_user):
+def _frame_at_cached(entry_date, entry_minute, ch_user, database=None):
     """Spot history as it stood at `entry_time` on `entry_date`. Nothing later, and nothing
     from later in the entry day itself."""
     d = _daily(entry_minute)

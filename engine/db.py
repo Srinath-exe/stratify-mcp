@@ -5,6 +5,7 @@ repo, so it does not import clickhouse_db.utils. Read-only by construction -- th
 engine never writes to the serving database.
 """
 import contextvars
+import time
 import os
 import threading
 
@@ -182,8 +183,46 @@ def _translate(exc):
         f"re-run it after that.", retry_after_seconds=wait)
 
 
+# PER-REQUEST WORK BUDGET. The ClickHouse quota is per TIER and shared by every user of it,
+# so one request that issues thousands of queries spends everyone's hour: a 12-leg, all-day
+# roll spec issued 14,745 queries in one call (security review 13 Nov 2026). Measured on the
+# free year, real strategies issue 6-289 queries (a 4-leg daily strategy with rolls is the
+# top) and finish within ~35 s; the paid window is ~7.5x longer. The budget is ~2x the
+# heaviest real case, so it binds only on specs built to burn the shared quota.
+BUDGETS = {"free": (600, 120.0), "paid": (4000, 400.0)}
+_budget = contextvars.ContextVar("query_budget", default=None)
+
+
+class TooMuchWork(RuntimeError):
+    """This one request needs more database work than any single request may use."""
+
+
+def begin_budget(tier):
+    queries, seconds = BUDGETS["free" if tier in (None, "free") else "paid"]
+    return _budget.set({"left": queries, "limit": queries, "seconds": seconds,
+                        "deadline": time.monotonic() + seconds})
+
+
+def end_budget(token):
+    _budget.reset(token)
+
+
+def _spend():
+    b = _budget.get()
+    if b is None:
+        return
+    b["left"] -= 1
+    if b["left"] < 0 or time.monotonic() > b["deadline"]:
+        raise TooMuchWork(
+            f"this strategy needs more work than one request may use (at most "
+            f"{b['limit']} database queries and {int(b['seconds'])} s). It is the shape, not "
+            f"the data: narrow the period, use fewer legs, fewer rolls or a lower max_times, "
+            f"or a weekly instead of a daily cadence, then run it again.")
+
+
 def rows(sql, parameters=None, cache=True):
     """Query returning a list of dicts."""
+    _spend()
     try:
         r = client().query(sql, parameters=parameters or {},
                            settings=QUERY_CACHE_SETTINGS if cache else None)
@@ -193,6 +232,7 @@ def rows(sql, parameters=None, cache=True):
 
 
 def scalar(sql, parameters=None):
+    _spend()
     try:
         r = client().query(sql, parameters=parameters or {})
     except Exception as exc:                      # noqa: BLE001

@@ -11,6 +11,41 @@ point at the methodology version.
 
 ## [Unreleased]
 
+## [server 1.0.3] — 2026-11-13
+
+A security review of the server before wider launch. Every fix has a regression test in
+`server/tests/test_security_review_2026_11_13.py`. No methodology change: no result moves.
+
+### Security
+- **Results are scoped to the account, never to the OAuth client.** An OAuth session's
+  key_id names the client, which every user of a shared client (ChatGPT's) has in common;
+  ownership lookups that accepted it could return another account's backtests.
+- **JSON embedded in report pages is escaped** (`server/scriptjson.py`), so a string a
+  caller chose can no longer close a `<script>` element. Strategy names and rule labels
+  are length- and character-limited at parse time, and the two client-side sinks escape.
+- **State-changing requests from another origin are refused** in one place, including
+  from sibling subdomains that `SameSite=Lax` treats as the same site.
+- An OAuth token can no longer create API keys (a grant is revoked by disconnecting; a
+  key was not).
+- The consent screen identifies a client by host and labels its name as self-declared;
+  redirect URIs and client-ID URLs with userinfo (`https://a.com@b.com`) are refused.
+- Authorization-code use and refresh-token rotation are atomic.
+- Availability: MCP dispatch, client-metadata fetches and the public replay run off the
+  event loop; the client-metadata fetch has a total deadline, a concurrency cap and a
+  cache; JSON-RPC batches are capped at 4 messages; each request has a database query and
+  time budget; replay, coverage and readiness responses are cached; IPv6 clients are
+  throttled per /64.
+- `/readyz` and coverage report a failure by type, without exception text or paths.
+- `data/schema/70_tiers.sql` no longer creates the tier users without a password.
+
+### Fixed
+- A returning Google sign-in revoked the user's API keys and client connections; only the
+  first sign-in that claims an older email-only account does that now.
+- `build_report(format="full")` on an open-protocol spec failed, and its prices were not
+  counted by the release meter.
+- Replays ran at the free tier whatever the owner's tier.
+- Gate and liquidity caches were not keyed by symbol, so a SENSEX run could read NIFTY's.
+
 ## [server 1.0.2] — 2026-11-12
 
 The server's version is the one it reports in `serverInfo`; the npm and PyPI clients keep

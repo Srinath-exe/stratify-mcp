@@ -10,6 +10,7 @@ working keys. The plaintext is shown exactly once, at creation.
 """
 import base64
 import hashlib
+import ipaddress
 import hmac
 import json
 import os
@@ -427,20 +428,29 @@ def account_for_google(sub, email, name=None, picture=None, tier="free"):
             else:
                 account_id = row["account_id"]
                 now = time.time()
+                claiming = row["google_sub"] is None      # first Google sign-in on this account
                 con.execute(
                     "UPDATE accounts SET google_sub=?, display_name=?, avatar_url=?, "
                     "email=?, last_seen_at=?, session_token=? WHERE account_id=?",
                     (sub, name, picture, email, now, secrets.token_urlsafe(32), account_id))
+            if row is not None and claiming:
                 # EVERYTHING MINTED BEFORE THE OWNER PROVED THE ADDRESS IS REVOKED. The
                 # email-only signup never verified anything, so anyone could have created
                 # this account first and be holding its key. Linking the verified owner to
                 # it while leaving that key alive would hand the newcomer the owner's
                 # history and quota. The owner keeps the account and its results; keys,
                 # OAuth grants and the session start from zero and are re-issued by them.
+                #
+                # ONLY ON THE CLAIM. This ran on EVERY Google sign-in, so a returning user
+                # who opened the website lost every API key and their ChatGPT/Claude
+                # connection (security review 13 Nov 2026). A password set on the unverified
+                # account goes too: it was issued before the owner proved the address.
                 con.execute("UPDATE api_keys SET revoked_at=? WHERE account_id=? "
                             "AND revoked_at IS NULL", (now, account_id))
                 con.execute("UPDATE oauth_tokens SET revoked_at=? WHERE account_id=? "
                             "AND revoked_at IS NULL", (now, account_id))
+                con.execute("UPDATE accounts SET password_hash=NULL, password_set_at=NULL "
+                            "WHERE account_id=?", (account_id,))
             if not con.execute("SELECT session_token FROM accounts WHERE account_id=?",
                                (account_id,)).fetchone()["session_token"]:
                 con.execute("UPDATE accounts SET session_token=? WHERE account_id=?",
@@ -481,6 +491,16 @@ def session_token(account_id):
         return token
     con.close()
     return row["session_token"] if row else None
+
+
+def tier_of_account(account_id):
+    """The account's tier, or "free" when unknown. Results carry no tier of their own."""
+    if not account_id:
+        return "free"
+    con = connect()
+    row = con.execute("SELECT tier FROM accounts WHERE account_id=?", (account_id,)).fetchone()
+    con.close()
+    return (row["tier"] if row and row["tier"] else "free")
 
 
 def account_by_session(token):
@@ -787,6 +807,13 @@ def set_password(email, password):
         raise ValueError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
     account_id, _ = create_account(email)
     con = connect()
+    linked = con.execute("SELECT google_sub FROM accounts WHERE account_id=?",
+                         (account_id,)).fetchone()
+    if linked and linked["google_sub"]:
+        con.close()
+        # A Google-verified account signs in with Google. A password added by an admin
+        # would be a second, weaker way in that its owner never chose.
+        raise ValueError("this account signs in with Google; a password cannot be set on it")
     with con:
         con.execute("UPDATE accounts SET password_hash=?, password_set_at=? "
                     "WHERE account_id=?", (hash_password(password), time.time(), account_id))
@@ -852,7 +879,19 @@ def login_failures_since(since, ip_hash=None, email=None):
 
 def hash_ip(ip):
     """Stored as a peppered hash, never in the clear: the throttle needs to recognise a
-    repeat visitor, not to keep a log of who visited."""
+    repeat visitor, not to keep a log of who visited.
+
+    An IPv6 address is reduced to its /64 first: one machine is routinely given a whole
+    /64, so per-address throttles gave an abuser unlimited fresh identities (security
+    review 13 Nov 2026)."""
+    try:
+        addr = ipaddress.ip_address(ip)
+        if addr.version == 6 and addr.ipv4_mapped is None:
+            ip = str(ipaddress.ip_network(f"{addr}/64", strict=False).network_address) + "/64"
+        elif addr.version == 6:
+            ip = str(addr.ipv4_mapped)
+    except ValueError:
+        pass
     return hashlib.blake2b(ip.encode(), key=PEPPER[:64], digest_size=16).hexdigest()
 
 
@@ -1032,6 +1071,7 @@ def result_for_account(backtest_id, account_id, key_id=None):
     if account_id:
         row = con.execute("SELECT * FROM results WHERE backtest_id=? AND account_id=?",
                           (backtest_id, account_id)).fetchone()
+    key_id = _personal_key(key_id)
     if row is None and key_id:
         row = con.execute("SELECT * FROM results WHERE backtest_id=? AND key_id=?",
                           (backtest_id, key_id)).fetchone()
@@ -1047,6 +1087,19 @@ def result_for_account(backtest_id, account_id, key_id=None):
     return row
 
 
+def _personal_key(key_id):
+    """The key_id IF it identifies one account, else "".
+
+    An API key belongs to exactly one account, so "rows written by this key" is a safe
+    ownership test. An OAuth session's key_id is "oauth:<client_id>", and a client_id is
+    NOT one account: ChatGPT's client is shared by every ChatGPT user who connects. Matching
+    results on it handed one user's backtests -- spec, P&L, report link -- to every other
+    user of the same client (security review, 13 Nov 2026). OAuth rows always carry their
+    account_id, so they never need the fallback.
+    """
+    return "" if (not key_id or str(key_id).startswith("oauth:")) else key_id
+
+
 def recent_results_for_owner(account_id, key_id=None, limit=10):
     """The account's backtests, newest first.
 
@@ -1054,6 +1107,9 @@ def recent_results_for_owner(account_id, key_id=None, limit=10):
     dashboard uses. This one answers "my last backtest" for a person who may have more
     than one key, or an OAuth session with none.
     """
+    key_id = _personal_key(key_id)
+    if not account_id and not key_id:
+        return []           # account_id '' would match the legacy ownerless rows
     con = connect()
     rows = con.execute(
         "SELECT backtest_id, created_at, spec_json, payload_json, report_token "
@@ -1086,6 +1142,9 @@ def recent_results_for_account(account_id, limit=20):
 
 
 def recent_results(key_id, limit=20):
+    key_id = _personal_key(key_id)
+    if not key_id:
+        return []
     con = connect()
     rows = con.execute(
         "SELECT backtest_id, created_at, spec_json FROM results WHERE key_id=? "
@@ -1529,10 +1588,15 @@ def consume_oauth_code(code, now=None):
     if row["expires_at"] < now:
         con.close()
         return dict(row), "expired"
+    # ATOMIC: the UPDATE only wins if the code is still unconsumed. A read-then-write let
+    # two concurrent exchanges of one code both succeed (security review 13 Nov 2026).
     with con:
-        con.execute("UPDATE oauth_codes SET consumed_at=? WHERE code_hash=?",
-                    (now, _hash(code)))
+        won = con.execute("UPDATE oauth_codes SET consumed_at=? "
+                          "WHERE code_hash=? AND consumed_at IS NULL",
+                          (now, _hash(code))).rowcount
     con.close()
+    if not won:
+        return dict(row), "replayed"
     return dict(row), None
 
 
@@ -1565,13 +1629,16 @@ def oauth_token(token, kind, now=None):
 
 
 def rotate_oauth_refresh(old_token, now=None):
+    """True if THIS call retired the token. Atomic, like code consumption: two concurrent
+    refreshes of one token must not both mint a new pair."""
     now = time.time() if now is None else now
     con = connect()
     with con:
-        con.execute("UPDATE oauth_tokens SET rotated_at=?, revoked_at=? "
-                    "WHERE token_hash=? AND kind='refresh'",
-                    (now, now, _hash(old_token)))
+        won = con.execute("UPDATE oauth_tokens SET rotated_at=?, revoked_at=? "
+                          "WHERE token_hash=? AND kind='refresh' AND revoked_at IS NULL",
+                          (now, now, _hash(old_token))).rowcount
     con.close()
+    return bool(won)
 
 
 def revoke_oauth_family(family_id, now=None):

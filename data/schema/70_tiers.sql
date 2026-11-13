@@ -12,10 +12,17 @@
 -- Defence in depth matters specifically because the application check is the one most
 -- likely to be edited by someone who does not know it is load-bearing.
 
-CREATE USER IF NOT EXISTS stratify_free IDENTIFIED WITH no_password
-  SETTINGS PROFILE 'demo_free';
-CREATE USER IF NOT EXISTS stratify_paid IDENTIFIED WITH no_password
-  SETTINGS PROFILE 'demo_free';
+-- THE TWO TIER USERS ARE NOT CREATED HERE. This file created them IDENTIFIED WITH
+-- no_password, so any rebuild from it silently undid the password fix of 2026-08-25. Create
+-- them first, with secrets that live outside the repo, e.g.:
+--
+--   CREATE USER IF NOT EXISTS stratify_free IDENTIFIED BY '<CLICKHOUSE_FREE_PASSWORD>'
+--     SETTINGS PROFILE 'demo_free';
+--   CREATE USER IF NOT EXISTS stratify_paid IDENTIFIED BY '<CLICKHOUSE_PAID_PASSWORD>'
+--     SETTINGS PROFILE 'demo_free';
+--
+-- If they do not exist, the row policies below fail on "TO stratify_free" -- loudly, which
+-- is the intended failure: a missing user must stop the build, never be created open.
 
 -- Free keys physically cannot read outside the free window, whatever the SQL asks for.
 CREATE ROW POLICY IF NOT EXISTS free_window ON stratify.options_1min

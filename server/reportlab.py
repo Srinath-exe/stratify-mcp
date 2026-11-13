@@ -2,6 +2,7 @@
 
 WHY THIS EXISTS. A report designed against one strategy fits one strategy. The six captured
 fixtures range from 51 trades to 385, from a single bought call to a four-legged condor, and
+from server.scriptjson import script_json
 from a weekly cadence to a daily one to the open protocol with mid-trade rules and no
 `structure` at all. A layout that looks composed on the condor and falls apart on the long
 call is not finished, and the only way to know is to flip between them while designing.
@@ -349,7 +350,7 @@ def render(records, chart_css, chart_js):
 </main>
 
 <script>
-const R = {json.dumps({r["key"]: r for r in records})};
+const R = {script_json({r["key"]: r for r in records})};
 const rs = v => {{
   if (v === null || v === undefined) return '\\u2014';
   const s = v < 0 ? '\\u2212' : '', a = Math.abs(v);

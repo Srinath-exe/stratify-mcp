@@ -269,7 +269,7 @@ the tests that need one and says so.
 
 ```bash
 pip install -r requirements-dev.txt
-python3 -m pytest engine/tests server/tests -q -rs   # 689 tests; 210 skip without the database
+python3 -m pytest engine/tests server/tests -q -rs   # 766 tests; 210 skip without the database
 cp .env.example .env                                  # then fill it in
 ./server/run.sh
 ```

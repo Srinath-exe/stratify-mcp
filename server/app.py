@@ -29,6 +29,7 @@ import urllib.parse
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Header, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
                                RedirectResponse, Response)
 
@@ -43,7 +44,7 @@ from . import (admin as admin_console, appview, artifact as artifact_report, boo
                render, reports, site, store, tools)
 
 PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "stratify", "version": "1.0.2"}
+SERVER_INFO = {"name": "stratify", "version": "1.0.3"}
 
 # Readiness floor for the served window. The free tier covers 2025-07-01..2026-06-30, which
 # is 246 NSE trading days as built. The check is a FLOOR, not equality: a holiday
@@ -90,6 +91,7 @@ app = FastAPI(title="Stratify MCP", docs_url=None, redoc_url=None, openapi_url=N
 # signup page advertises an mcp_endpoint on the WEB host, and a report minted during an
 # MCP call gets a link on the PROTOCOL host -- each correct-by-accident and wrong to hand
 # to a person. These pin the two URLs that are handed out rather than merely served.
+MAX_BATCH = 4
 PUBLIC_BASE_URL  = os.getenv("STRATIFY_PUBLIC_BASE_URL", "").rstrip("/")
 PUBLIC_MCP_URL   = os.getenv("STRATIFY_PUBLIC_MCP_URL", "").rstrip("/")
 
@@ -173,6 +175,29 @@ def _same_site_write(request):
     if not origin:
         return True
     return origin.rstrip("/") in {PUBLIC_BASE_URL, str(request.base_url).rstrip("/")} - {""}
+
+
+# Endpoints a browser legitimately calls from ANOTHER origin, none of which read the session
+# cookie: the MCP transport (claude.ai and other web clients, gated by its own Origin
+# allow-list), the OAuth token/registration/revocation endpoints (called by MCP clients), and
+# Google One Tap (Google posts the credential; it carries its own double-submit CSRF check).
+_CROSS_ORIGIN_OK = ("/mcp", "/oauth/token", "/oauth/register", "/oauth/revoke")
+
+
+@app.middleware("http")
+async def _refuse_cross_origin_writes(request, call_next):
+    """One rule for every state-changing request: if a browser sent it from another origin, it
+    is refused -- including from sibling *.aeon-labs.site hosts, which SameSite=Lax treats as
+    the same site. It was applied route by route and four routes had it; consent
+    (/oauth/authorize), /admin/password, /dashboard/keys and others did not, so a page on any
+    sibling subdomain could approve an OAuth grant or set a password with the visitor's cookie
+    (security review 13 Nov 2026). Enforcing it here means a new route cannot forget it."""
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        path = request.url.path
+        exempt = (path.startswith(_CROSS_ORIGIN_OK) or path == oauth.ONETAP_PATH)
+        if not exempt and not _same_site_write(request):
+            return JSONResponse({"error": "cross-origin request refused"}, status_code=403)
+    return await call_next(request)
 
 
 async def _read_json(request):
@@ -416,9 +441,25 @@ async def _serve_mcp(request: Request, url_key):
     if _needs_auth(message) and _authenticate(request.headers, url_key) is None:
         return _cors(_auth_challenge(request), request)
 
+    # BATCHES ARE CAPPED. MCP 2025-06-18 (what initialize advertises) removed JSON-RPC
+    # batching, and every member re-authenticates with scrypt: a 58 KB batch of 744 calls
+    # held one worker for 67 s (security review 13 Nov 2026). A small batch is still
+    # answered for older clients.
+    if isinstance(message, list) and len(message) > MAX_BATCH:
+        return _cors(JSONResponse(_rpc_error(
+            None, INVALID_REQUEST,
+            f"batches are limited to {MAX_BATCH} messages; send calls individually"),
+            status_code=400), request)
+    # OFF THE EVENT LOOP. _handle is synchronous -- ClickHouse queries, the engine, SQLite,
+    # and the admission wait's time.sleep -- and calling it here blocked this worker's
+    # whole event loop for the length of a backtest: health checks, pages and every other
+    # request on the worker waited behind it. Starlette's thread pool is what the
+    # concurrency limiter (thread-tagged slots) was written for.
     if isinstance(message, list):
-        return _cors(JSONResponse([_handle(m, request, url_key) for m in message]), request)
-    return _cors(JSONResponse(_handle(message, request, url_key)), request)
+        out = [await run_in_threadpool(_handle, m, request, url_key) for m in message]
+        return _cors(JSONResponse(out), request)
+    return _cors(JSONResponse(await run_in_threadpool(_handle, message, request, url_key)),
+                 request)
 
 
 def _needs_auth(message):
@@ -574,6 +615,7 @@ def _handle(message, request, url_key=None):
     # Bind the ClickHouse identity for this request. Everything downstream inherits it,
     # and the row policy on that user is what actually stops a free key reading paid data.
     tier_token = engine_db.use_tier(tier.name)
+    budget_token = engine_db.begin_budget(tier.name)
     # The audit row is assembled as the call runs and written in `finally`, so a refusal
     # and an internal error are recorded as faithfully as a success. A log that only holds
     # the calls that worked is the one shape of log that cannot answer "what went wrong".
@@ -588,6 +630,9 @@ def _handle(message, request, url_key=None):
     except tools.ToolError as exc:
         audit["outcome"], audit["refusal"] = "refused", str(exc)[:500]
         return _rpc_ok(request_id, _tool_refusal(str(exc)))
+    except engine_db.TooMuchWork as exc:
+        audit["outcome"], audit["refusal"] = "refused", str(exc)[:500]
+        return _rpc_ok(request_id, _tool_refusal(str(exc)))
     except engine_db.CapacityExceeded as exc:
         # A shared-capacity limit, not a fault. It reached the blanket handler below and
         # came back as "internal error", which is both unhelpful and untrue.
@@ -600,6 +645,7 @@ def _handle(message, request, url_key=None):
         traceback.print_exc()
         return _rpc_error(request_id, -32603, "internal error")
     finally:
+        engine_db.end_budget(budget_token)
         engine_db.current_user.reset(tier_token)
         # price_points is written by the handler into the context. Metering it HERE, at
         # the same point as CPU, is what stops a future tool that returns prices from
@@ -708,6 +754,15 @@ async def new_key(request: Request):
     # with a valid key or an active session is, by definition, already inside.
     presented = _authenticate(request.headers)
     session = _account_from_cookie(request)
+    # An API-key credential is a sqlite3.Row (no .get); an OAuth one is a dict with "via".
+    if presented is not None and "via" in presented.keys() and presented["via"] == "oauth":
+        # An OAuth grant is short-lived and is revoked by "Disconnect". Letting it mint an
+        # API key turned a one-hour grant into permanent access that survived the
+        # disconnect, which the consent screen never mentions (security review 13 Nov 2026).
+        return JSONResponse(
+            {"error": "an OAuth session cannot create API keys",
+             "how_to_fix": "Create keys from the signed-in dashboard, or with an existing API key."},
+            status_code=403)
     if presented is not None:
         account_id = presented["account_id"]
     elif session is not None:
@@ -773,7 +828,20 @@ async def llms_txt(request: Request):
 async def coverage(request: Request):
     """Public and unauthenticated on purpose: a client should be able to see what exists
     before deciding whether to sign up. It returns metadata, never data."""
-    return tools.describe_coverage({}, {"key_id": None, "base_url": _base_url(request)})
+    # Cached: it runs several ClickHouse queries as the SHARED free user, and an
+    # unauthenticated loop over it could spend every free user's hourly budget
+    # (security review 13 Nov 2026). Coverage changes when the data is rebuilt, not by
+    # the minute.
+    hit = _COVERAGE_CACHE.get("v")
+    if hit and hit[0] > time.time():
+        return hit[1]
+    out = await run_in_threadpool(
+        tools.describe_coverage, {}, {"key_id": None, "base_url": _base_url(request)})
+    _COVERAGE_CACHE["v"] = (time.time() + 300, out)
+    return out
+
+
+_COVERAGE_CACHE = {}
 
 
 # ---------------------------------------------------------------- dashboard
@@ -1413,8 +1481,30 @@ async def full_report(token: str):
 
 
 
+_REPLAY_CACHE = {}          # token -> (expires, HTMLResponse body, status)
+_REPLAY_CACHE_MAX = 8      # pages are up to a few MB; a handful per worker is plenty
+_REPLAY_CACHE_SECONDS = 1800
+
+
 @app.get("/replay/{token}", response_class=HTMLResponse)
 async def replay_page(token: str):
+    """Public and unauthenticated, and it RE-RUNS the backtest -- so it is cached per token,
+    bounded by the same per-request query budget as a tool call, run off the event loop,
+    and rate-limited at nginx. Before, every GET re-ran the spec on the event loop with no
+    quota at all, so a few parallel requests stalled every worker and spent the shared free
+    ClickHouse budget (security review 13 Nov 2026)."""
+    hit = _REPLAY_CACHE.get(token)
+    if hit and hit[0] > time.time():
+        return HTMLResponse(hit[1], status_code=hit[2])
+    resp = await run_in_threadpool(_replay_page_sync, token)
+    if resp.status_code in (200, 410):
+        if len(_REPLAY_CACHE) >= _REPLAY_CACHE_MAX:
+            _REPLAY_CACHE.pop(min(_REPLAY_CACHE, key=lambda k: _REPLAY_CACHE[k][0]), None)
+        _REPLAY_CACHE[token] = (time.time() + _REPLAY_CACHE_SECONDS, resp.body, resp.status_code)
+    return resp
+
+
+def _replay_page_sync(token):
     """Step through the strategy on the index, entry by entry.
 
     THE TRACKS ARE NOT IN THE STORED PAYLOAD, so this re-runs the spec the way
@@ -1442,11 +1532,12 @@ async def replay_page(token: str):
             "Spec bodies are kept for 30 days and then removed on schedule, so this one "
             "can no longer be re-run. The report itself is still at its own link.",
             status_link=(f"/r/{token}", "Back to the report")), status_code=410)
-    try:
-        tier = row["tier"] if "tier" in row.keys() else "free"
-    except Exception:                                              # noqa: BLE001
-        tier = "free"
+    # The results table has no tier column, so this always ran as free and a paid user's
+    # replay outside the free window failed. The OWNER's tier is the right one: the replay
+    # re-runs what they were entitled to run.
+    tier = store.tier_of_account(row["account_id"] if "account_id" in row.keys() else "")
     token_ctx = engine_db.use_tier(tier)
+    budget_ctx = engine_db.begin_budget(tier)
     try:
         # TWO SHAPES, ONE ROUTE -- the same dispatch run_backtest uses. A spec carrying
         # "legs" is the open protocol and goes through strategy/simulate; anything else
@@ -1470,6 +1561,11 @@ async def replay_page(token: str):
             "structure that would need a single leg's price to draw is refused rather "
             "than approximated.",
             status_link=(f"/r/{token}", "Back to the report")), status_code=200)
+    except engine_db.TooMuchWork as exc:
+        return HTMLResponse(render.message_page(
+            "This strategy is too heavy to replay",
+            str(exc),
+            status_link=(f"/r/{token}", "Back to the report")), status_code=200)
     except Exception:                                              # noqa: BLE001
         traceback.print_exc()
         return HTMLResponse(render.message_page(
@@ -1477,6 +1573,7 @@ async def replay_page(token: str):
             "Re-running this strategy did not produce a replayable track.",
             status_link=(f"/r/{token}", "Back to the report")), status_code=500)
     finally:
+        engine_db.end_budget(budget_ctx)
         engine_db.current_user.reset(token_ctx)
 
     return HTMLResponse(replay_view.render(
@@ -1556,7 +1653,7 @@ async def oauth_authorize(request: Request):
     """
     params = dict(request.query_params)
     try:
-        ctx = mcpauth.begin(params)
+        ctx = await run_in_threadpool(mcpauth.begin, params)
     except mcpauth.OAuthError as exc:
         # SHOWN ON OUR OWN PAGE, never bounced to the redirect. A malformed client_id or
         # an unregistered redirect_uri is exactly the case where sending anything to that
@@ -1590,7 +1687,7 @@ async def oauth_authorize_submit(request: Request):
     form = dict(await request.form())
     params = {k: v for k, v in form.items() if k not in ("decision",)}
     try:
-        ctx = mcpauth.begin(params)
+        ctx = await run_in_threadpool(mcpauth.begin, params)
     except mcpauth.OAuthError as exc:
         return HTMLResponse(render.message_page(
             "This app cannot be connected", exc.description,
@@ -1629,9 +1726,9 @@ async def oauth_token(request: Request):
     grant = form.get("grant_type")
     try:
         if grant == "authorization_code":
-            out = mcpauth.exchange_code(form)
+            out = await run_in_threadpool(mcpauth.exchange_code, form)
         elif grant == "refresh_token":
-            out = mcpauth.refresh(form)
+            out = await run_in_threadpool(mcpauth.refresh, form)
         else:
             raise mcpauth.OAuthError(
                 "unsupported_grant_type",
@@ -1674,7 +1771,7 @@ async def revoke_connection(request: Request):
 @app.post("/oauth/revoke")
 async def oauth_revoke(request: Request):
     form = dict(await request.form())
-    return JSONResponse(mcpauth.revoke(form), headers={"Cache-Control": "no-store"})
+    return JSONResponse(await run_in_threadpool(mcpauth.revoke, form), headers={"Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------- waitlist
@@ -1737,8 +1834,21 @@ async def healthz():
     return {"ok": True, "ts": time.time()}
 
 
+_READY_CACHE = {}
+
+
 @app.get("/readyz")
 async def readyz():
+    """Cached for 15 s: it is public and queries ClickHouse as the shared free user."""
+    hit = _READY_CACHE.get("v")
+    if hit and hit[0] > time.time():
+        return JSONResponse(hit[1], status_code=hit[2])
+    body, status = await run_in_threadpool(_readyz_sync)
+    _READY_CACHE["v"] = (time.time() + 15, body, status)
+    return JSONResponse(body, status_code=status)
+
+
+def _readyz_sync():
     """READINESS — can this instance actually serve a backtest right now?
 
     /healthz answered `{"ok": true}` while ClickHouse could be unreachable, the service
@@ -1771,22 +1881,24 @@ async def readyz():
             **({} if ok else {"error": f"only {days} trading days in the tier window; "
                               f"expected at least {MIN_TRADING_DAYS_SERVED}"})}
     except Exception as exc:                                       # noqa: BLE001
-        checks["clickhouse"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+        # The type only: the message can carry hostnames and query text, and this
+        # endpoint is public. The full error goes to the container log.
+        print(f"readyz clickhouse: {type(exc).__name__}: {exc}", flush=True)
+        checks["clickhouse"] = {"ok": False, "error": type(exc).__name__}
 
     # 2. The service database, checked by WRITING. A read proves far less: the volume can
     #    be mounted read-only, or the disk full, and every SELECT still succeeds while
     #    signup, key issuance and usage metering all fail.
     try:
         store.health_probe()
-        checks["service_db"] = {"ok": True, "path": str(store.DB_PATH)}
+        checks["service_db"] = {"ok": True}
     except Exception as exc:                                       # noqa: BLE001
-        checks["service_db"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+        print(f"readyz service_db: {type(exc).__name__}: {exc}", flush=True)
+        checks["service_db"] = {"ok": False, "error": type(exc).__name__}
 
     ok = all(c["ok"] for c in checks.values())
-    return JSONResponse(
-        {"ok": ok, "checks": checks, "took_ms": round((time.time() - t0) * 1000, 1),
-         "version": SERVER_INFO.get("version")},
-        status_code=200 if ok else 503)
+    return ({"ok": ok, "checks": checks, "took_ms": round((time.time() - t0) * 1000, 1),
+             "version": SERVER_INFO.get("version")}, 200 if ok else 503)
 
 
 @app.get("/r/{token}", response_class=HTMLResponse)

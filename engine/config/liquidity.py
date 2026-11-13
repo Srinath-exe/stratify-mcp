@@ -46,8 +46,10 @@ def otm_bucket(otm_points):
     return int(otm_points // 250) * 250
 
 
-@functools.lru_cache(maxsize=1)
-def _profile():
+@functools.lru_cache(maxsize=4)
+def _profile(database=None):
+    # Keyed by database: NIFTY and SENSEX have different liquidity profiles, and an unkeyed
+    # cache served whichever symbol loaded first to both (security review 13 Nov 2026).
     return {(r["dte_bucket"], r["otm_bucket"]): r for r in db.rows(
         f"SELECT dte_bucket, otm_bucket, n_contract_days, pct_minutes_traded, "
         f"median_volume_lots, median_price_pts, median_day_volume_lots "
@@ -56,7 +58,7 @@ def _profile():
 
 def profile(dte, otm_points):
     """Measured liquidity for this (dte, distance) cell, or None if never observed."""
-    return _profile().get((dte_bucket(dte), otm_bucket(otm_points)))
+    return _profile(db.database()).get((dte_bucket(dte), otm_bucket(otm_points)))
 
 
 def assess(dte, otm_points):

@@ -189,6 +189,37 @@ class StrategyError(ValueError):
     """The strategy cannot be run as written. Always says why, and what is accepted."""
 
 
+# Free text a caller chose (a strategy name, a rule label) is echoed into tool output, into
+# exit reasons, and into the HTML of shared report pages. It is limited to ordinary words and
+# punctuation: no markup characters, quotes, backslashes or control characters (security
+# review 13 Nov 2026 -- a rule label of "</script><script>..." reached three report pages).
+_TEXT_OK = re.compile(r"[\w .,:;!?()\[\]/+%#@=*~^|'$\u2010-\u2015\u2018-\u201f\u2026\u00b7\u20b9-]*", re.UNICODE)
+
+
+def _text(value, where, maxlen, default):
+    if value is None or value == "":
+        return default
+    if not isinstance(value, str):
+        raise StrategyError(f"{where} must be text")
+    value = value.strip()
+    if len(value) > maxlen:
+        raise StrategyError(f"{where} must be at most {maxlen} characters")
+    if not _TEXT_OK.fullmatch(value):
+        raise StrategyError(f"{where} may use letters, digits, spaces and ordinary "
+                            f"punctuation only (no < > & double quotes, backticks or backslashes)")
+    return value or default
+
+
+def _roll_qty(q, where):
+    """None keeps each leg's own qty. Otherwise the same bounds as a leg's qty: a negative or
+    fractional qty re-signed a leg after the entry-only structure check, and text crashed."""
+    if q is None:
+        return None
+    if not isinstance(q, int) or isinstance(q, bool) or not 1 <= q <= 100:
+        raise StrategyError(f"{where} must be a whole number from 1 to 100")
+    return q
+
+
 # ------------------------------------------------------------------------ helpers
 
 def _only(d, allowed, where):
@@ -293,7 +324,9 @@ def parse_strike(raw, where):
             raise StrategyError(f"{where}.from_leg needs a leg index")
         if ("pct" in v) == ("points" in v):
             raise StrategyError(f"{where}.from_leg needs exactly one of pct or points")
-        return {"kind": "from_leg", "leg": int(v["leg"]),
+        if not isinstance(v["leg"], int) or isinstance(v["leg"], bool) or not 0 <= v["leg"] < 50:
+            raise StrategyError(f"{where}.from_leg.leg must be a leg index (a whole number)")
+        return {"kind": "from_leg", "leg": v["leg"],
                 "pct": _num(v["pct"], f"{where}.from_leg.pct") if "pct" in v else None,
                 "points": (_num(v["points"], f"{where}.from_leg.points")
                            if "points" in v else None)}
@@ -333,9 +366,7 @@ def parse_leg(raw, where, index=None):
     # guard -- it is a bound. Unconstrained, it accepted any JSON value of any type and any
     # length up to the whole request body, which is a silly thing to carry through the
     # engine and store per trade.
-    label = raw.get("label")
-    if label is not None and (not isinstance(label, str) or len(label) > 60):
-        raise StrategyError(f"{where}.label must be text of at most 60 characters")
+    label = _text(raw.get("label"), f"{where}.label", 60, None)
     return {"side": side, "type": otype, "qty": qty, "expiry": expiry,
             "strike": parse_strike(raw["strike"], f"{where}.strike"),
             "label": label or (f"L{index}" if index is not None else None)}
@@ -513,7 +544,7 @@ def parse_action(raw, where, n_legs):
                 f'reopen at)')
         return {"do": "roll", "legs": _leg_list(val["legs"], f"{where}.roll.legs", n_legs),
                 "to": parse_strike(val["to"], f"{where}.roll.to"),
-                "qty": val.get("qty")}
+                "qty": _roll_qty(val.get("qty"), f"{where}.roll.qty")}
     if key == "close_and_open":
         if not isinstance(val, dict):
             raise StrategyError(f"{where}.close_and_open must be an object")
@@ -840,7 +871,7 @@ def parse(raw, window=None):
         rules.append({
             "when": parse_condition(r["when"], f"rules[{i}].when", len(legs)),
             "then": parse_action(r["then"], f"rules[{i}].then", len(legs)),
-            "max_times": mt, "label": r.get("label") or f"rule {i}"})
+            "max_times": mt, "label": _text(r.get("label"), f"rules[{i}].label", 60, f"rule {i}")})
 
     exit_raw = raw.get("exit") or {}
     if not isinstance(exit_raw, dict):
@@ -892,7 +923,7 @@ def parse(raw, window=None):
             f"{MIN_TRADING_DAYS} are required")
 
     strat = Strategy(
-        name=raw.get("name") or "untitled", symbol=symbol,
+        name=_text(raw.get("name"), "name", 80, "untitled"), symbol=symbol,
         date_from=date_from, date_to=date_to, cadence=cadence,
         entry_minute=entry_minute, entry_dte=entry_dte, max_dte=max_dte,
         entry_when=entry_when, legs=legs, rules=rules, exit_minute=exit_minute,

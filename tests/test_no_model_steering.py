@@ -32,6 +32,7 @@ BANNED = [
     r"\bgemini\b",
     r"tell the user",
     r"give them the",
+    r"give the user",
     r"do not just apologise",
 ]
 

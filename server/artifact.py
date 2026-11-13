@@ -32,6 +32,7 @@ RELEASE. This document embeds exactly what the payload already released and noth
 It is a rendering of a tool result, not a second, richer channel -- so a summary-detail
 backtest produces a report with no per-trade prices in it, because there were none to draw.
 """
+from .scriptjson import script_json
 import html
 import json
 
@@ -546,7 +547,7 @@ def render(payload, backtest_id, report_url=None):
   f' Source of record: {_e(report_url)}' if report_url else ''}</p>
 </footer>
 </div>
-<script>var D={json.dumps(data, separators=(",", ":"), default=str)};{JS}</script>"""
+<script>var D={script_json(data, separators=(",", ":"), default=str)};{JS}</script>"""
 
     title = f'Stratify · {spec.get("structure", "backtest")} · {_money(pnl)}'
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
