@@ -25,6 +25,7 @@ resolves to one -- a per-leg P&L is a per-leg price by another name: NOT HERE, n
 which is why this screen costs nothing against the price meter. See engine/replay.py for
 the arithmetic behind that claim.
 """
+from .scriptjson import script_json
 import html
 import json
 import pathlib
@@ -1141,11 +1142,12 @@ function renderOpen(){
   $('dockopen').innerHTML = html; }
 
 /* ------------------------------------------------------------------ trade log */
+function escH(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function renderHistory(flash){
   var rows = ST.closed.slice().reverse().map(function(t,i){
     return '<tr'+(flash&&i===0?' class="new"':'')+'>'+
       '<td class="n">'+t.n+'</td><td>'+t.entry+'</td><td>'+t.exit+'</td>'+
-      '<td>'+t.reason+'</td><td class="n">'+t.lots+'</td>'+
+      '<td>'+escH(t.reason)+'</td><td class="n">'+t.lots+'</td>'+
       '<td class="n">'+sgn(t.pts)+'</td>'+
       '<td class="n '+cls(t.pnl)+'">'+money(t.pnl)+'</td>'+
       '<td class="n">'+money(t.equity)+'</td></tr>' }).join('');
@@ -1689,6 +1691,6 @@ def render(payload, track, capital=1_000_000, deploy=0.10, report_url=None, titl
             # than S precisely so nothing shadows them, but the aliases stay because the
             # helper names are single letters and a future edit could reintroduce the clash
             # without noticing.
-            f'<script>var S_=S,T_=T;var MONOFONT={json.dumps(design.MONO)};</script>'
-            f'<script>window.__REPLAY__={json.dumps(data, separators=(",", ":"), default=str)};</script>'
+            f'<script>var S_=S,T_=T;var MONOFONT={script_json(design.MONO)};</script>'
+            f'<script>window.__REPLAY__={script_json(data, separators=(",", ":"), default=str)};</script>'
             f'<script>{JS}</script></body></html>')

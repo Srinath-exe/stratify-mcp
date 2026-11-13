@@ -25,6 +25,7 @@ the tooltip. Four steps a side, cut at quartiles of the window's own absolute re
 the scale adapts to the strategy rather than to a fixed rupee threshold that would render
 one strategy uniformly pale and another uniformly saturated.
 """
+from .scriptjson import script_json
 import datetime as dt
 import html
 import json
@@ -818,6 +819,7 @@ function day(){
           + '</div><div class="r '+sgn(r.pnl)+'">'+full(r.pnl)+'</div></div></div>';
       }).join('');
 }
+function escH(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function trade(r){
   if(r.unsized){
     return '<div class="cv-t"><div class="cv-th"><div class="w">The margin model returns '
@@ -832,7 +834,7 @@ function trade(r){
   var t = r.di>=0 ? D.d[r.di] : null;
   var head = '<div class="cv-th"><div class="w">'
     + (t? '<b>'+t['in'].slice(11)+'</b> in on '+t['in'].slice(0,10)
-          +' · <b>'+t.out.slice(11)+'</b> out · '+t.why
+          +' · <b>'+t.out.slice(11)+'</b> out · '+escH(t.why)
           +' · held '+mins(t.held)
         : 'closed this day')
     + ' · '+r.lots+' lot'+(r.lots===1?'':'s')+' · '+full(r.m)+' blocked</div>'
@@ -985,7 +987,7 @@ def render(payload, num="02", capital=None, deploy=None):
 
   <div class="cv-day" id="cvDay" hidden></div>
 </section>
-<script>window.__CV__ = {json.dumps(data, separators=(",", ":"))};</script>
+<script>window.__CV__ = {script_json(data, separators=(",", ":"))};</script>
 <script>{JS}</script>
 """
 

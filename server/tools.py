@@ -586,6 +586,13 @@ def _preset_spec_hash(spec):
         spec.date_to)))
 
 
+def _trial_key(context):
+    """Whose earlier variants count toward this caller's deflated Sharpe. Per ACCOUNT for an
+    OAuth session: its key_id is the client's, shared by every ChatGPT user, which pooled
+    strangers' trials into one count."""
+    return store._personal_key(context.get("key_id")) or "acct:" + (context.get("account_id") or "")
+
+
 def run_backtest(arguments, context):
     raw = arguments.get("spec")
     try:
@@ -624,7 +631,7 @@ def run_backtest(arguments, context):
     cpu = time.process_time() - t0
 
     summary = metrics.summarise(result)
-    panel = honesty.panel(result, summary, api_key_id=context["key_id"])
+    panel = honesty.panel(result, summary, api_key_id=_trial_key(context))
 
     # Built at full width, then TRIMMED BEFORE IT IS STORED.
     #
@@ -954,11 +961,12 @@ def _coverage(tier):
         try:
             per_symbol[sym] = _coverage_one(tier, sym)
         except Exception as exc:                                   # noqa: BLE001
+            print(f"coverage {sym}: {type(exc).__name__}: {exc}", flush=True)
             # A symbol whose serving database is absent or mid-rebuild must not take the
             # whole coverage call down -- the other symbol is still perfectly serveable,
             # and a caller that cannot read coverage cannot do anything at all.
             per_symbol[sym] = {"symbol": sym, "available": False,
-                               "reason": f"{type(exc).__name__}: {exc}"[:200]}
+                               "reason": "coverage could not be read right now"}
         finally:
             engine_db.current_db.reset(tok)
 
@@ -1163,7 +1171,9 @@ def search(arguments, context):
             if not query or query in k or query in v.lower()]
     hits.append({"id": "doc:coverage", "title": "Data coverage",
                  "text": "Symbols, dates, structures, gates, biases, lot sizes, known gaps."})
-    for row in store.recent_results(context["key_id"], limit=10):
+    # By ACCOUNT, never by key_id alone: an OAuth key_id is shared by every user of the client.
+    for row in store.recent_results_for_owner(context.get("account_id"), context.get("key_id"),
+                                              limit=10):
         hits.append({"id": row["backtest_id"], "title": "Backtest result",
                      "text": row["spec_json"][:300]})
     return {"results": hits[:20]}
@@ -1280,8 +1290,18 @@ def _full_report(arguments, context, row, payload, backtest_id):
     # Re-run the stored spec to get EVERY trade. The stored payload was trimmed to what was
     # released, and a capital curve built from the first 300 of 380 trades silently ends
     # the strategy eighteen months early -- which looks like a result rather than a bug.
-    spec = spec_mod.parse(json.loads(row["spec_json"]), tier=context.get("tier", "free"))
-    result = backtest.run(spec, lots=1)
+    # Same two-shape dispatch as run_backtest: an open-protocol spec ("legs") parsed with
+    # the preset parser was an uncaught error, reported as "internal error".
+    raw_spec = json.loads(row["spec_json"])
+    tier = context.get("tier", "free")
+    try:
+        if isinstance(raw_spec, dict) and "legs" in raw_spec:
+            result = simulate.run(strategy_mod.parse(raw_spec, window=spec_mod.window_for(tier)),
+                                  lots=1)
+        else:
+            result = backtest.run(spec_mod.parse(raw_spec, tier=tier), lots=1)
+    except (spec_mod.SpecError, strategy_mod.StrategyError) as exc:
+        raise ToolError(str(exc)) from None
     chart_rows = detail.rows_for_chart(result)
     if not chart_rows:
         raise ToolError("that backtest produced no trades, so there is nothing to plot")
@@ -1306,6 +1326,10 @@ def _full_report(arguments, context, row, payload, backtest_id):
     full_payload = dict(payload)
     full_payload.update(detail.build(result, max_trades=detail.MAX_TRADES_RETURNED))
     full_payload["data_release"] = _release_note(full_payload)
+    # METERED like every other release. This path re-runs the spec and returns every
+    # trade's per-leg prices on a public page, and it recorded 0 price points -- up to
+    # ~24,000 unmetered prints an hour (security review 13 Nov 2026).
+    context["price_points"] = _count_points(full_payload.get("trades") or [])
     # The capital controls are live in the page, so these arguments seed the view rather
     # than fixing it -- the reader can still move them without asking for a new report.
     html_doc = reportui.render(full_payload, backtest_id, report_url=url,
@@ -1323,8 +1347,8 @@ def _full_report(arguments, context, row, payload, backtest_id):
     return {
         "backtest_id": backtest_id,
         "full_report_url": full_url,
-        "message": ("The full strategy report is ready. GIVE THE USER THIS LINK — it is "
-                    "the whole strategy on one page and it is not something to summarise."),
+        "message": ("The full strategy report is ready at full_report_url: the whole "
+                    "strategy on one page, with live capital controls."),
         "contains": ["the strategy's rules in plain English",
                      f"what it did to {capital:,} rupees of capital, with the capital, "
                      f"deployment and position-sizing controls live in the page",

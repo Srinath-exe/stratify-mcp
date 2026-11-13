@@ -30,6 +30,7 @@ timestamps, P&L and margin, which are the caller's own results. Every panel on t
 computed from PRICE-FREE rows -- so drawing all of it costs nothing against the per-account
 price meter.
 """
+from .scriptjson import script_json
 import datetime as dt
 import html
 import json
@@ -2244,7 +2245,7 @@ def render(payload, chart_rows, candles, backtest_id, capital=sizing.DEFAULT_CAP
             f'<style>{CSS}</style></head><body>{body}'
             f'<script>{LWC}</script>'
             f'<script>window.__STRATIFY__='
-            f'{json.dumps(data, separators=(",", ":"), default=str)};</script>'
+            f'{script_json(data, separators=(",", ":"), default=str)};</script>'
             f'<script>{JS}</script></body></html>')
 
 

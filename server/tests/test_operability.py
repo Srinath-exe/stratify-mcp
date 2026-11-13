@@ -71,18 +71,24 @@ def test_readiness_reports_each_dependency_separately(client):
 
 def test_readiness_is_503_when_clickhouse_is_unreachable(client, monkeypatch):
     import server.app as app_module
+    app_module._READY_CACHE.clear()
     monkeypatch.setattr(app_module.engine_db, "rows",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("connection refused")))
     r = client.get("/readyz")
     assert r.status_code == 503
     assert r.json()["checks"]["clickhouse"]["ok"] is False
-    assert "connection refused" in r.json()["checks"]["clickhouse"]["error"]
+    # The failure is named by TYPE only: /readyz is public, and an exception message can
+    # carry hostnames and query text (security review 13 Nov 2026). It goes to the log.
+    assert r.json()["checks"]["clickhouse"]["error"] == "OSError"
+    assert "connection refused" not in r.text
+    assert "path" not in r.json()["checks"]["service_db"]
 
 
 def test_readiness_fails_on_a_short_window_not_just_an_unreachable_one(client, monkeypatch):
     """A rebuilt-but-unfilled table is the dangerous case: it answers instantly, so every
     other probe calls it healthy, and every backtest silently returns zero trades."""
     import server.app as app_module
+    app_module._READY_CACHE.clear()
     monkeypatch.setattr(app_module.engine_db, "rows",
                         lambda *a, **k: [{"lo": "2025-07-01", "hi": "2025-07-10", "days": 8}])
     r = client.get("/readyz")

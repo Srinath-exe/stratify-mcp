@@ -1077,10 +1077,15 @@ def consent_view(account, ctx, params, offline=False):
     return {
         "page": "consent",
         "you": identity(account),
-        "client_display": client.get("display") or client["client_id"],
-        "client_claimed_name": (client.get("client_name")
-                                if client.get("is_cimd") else None),
-        "verified": not client.get("is_cimd"),
+        # NO CLIENT IS VERIFIED. A CIMD document and a dynamic registration are both
+        # self-asserted -- registration is open by RFC 7591 -- so the name a client gives is
+        # shown as a claim, and the identity shown is a host: the CIMD document's, or for a
+        # registered client the host the code will be sent to. An anonymous registration
+        # named "ChatGPT" rendered as a verified "Connect ChatGPT?" (security review 13 Nov).
+        "client_display": (client.get("display") if client.get("is_cimd")
+                           else _host_of(ctx["redirect_uri"])) or client["client_id"],
+        "client_claimed_name": client.get("client_name"),
+        "verified": False,
         "redirect_host": _host_of(ctx["redirect_uri"]),
         "grants": grants,
         "cannot": [
@@ -1102,7 +1107,10 @@ def consent_view(account, ctx, params, offline=False):
 def _host_of(url):
     try:
         from urllib.parse import urlparse
-        return urlparse(url).netloc or url
+        p = urlparse(url)
+        # hostname, never netloc: netloc keeps userinfo, so "https://chatgpt.com@evil.example"
+        # displayed as "chatgpt.com@evil.example".
+        return (p.hostname + (f":{p.port}" if p.port else "")) if p.hostname else url
     except Exception:                                              # noqa: BLE001
         return url
 

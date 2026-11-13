@@ -46,6 +46,7 @@ import os
 import secrets
 import socket
 import ssl
+import threading
 import time
 import urllib.parse
 
@@ -69,6 +70,14 @@ REGISTRATIONS_PER_IP_PER_HOUR = 20
 # consent screen shows the URL's host rather than the client_name it claims.
 CIMD_TIMEOUT = 10
 CIMD_MAX_BYTES = 64 * 1024
+# CIMD_TIMEOUT bounds each socket operation, not the fetch: a server trickling one byte every
+# 9 s held a worker for days (security review 13 Nov 2026). The deadline bounds the whole
+# fetch, a small semaphore bounds how many run at once, and good documents are cached so a
+# client that connects every few minutes is fetched once.
+CIMD_DEADLINE = 15
+CIMD_CACHE_SECONDS = 600
+_CIMD_SLOTS = threading.BoundedSemaphore(4)
+_CIMD_CACHE = {}
 
 
 class OAuthError(Exception):
@@ -169,6 +178,8 @@ def _valid_redirect(uri):
     p = urllib.parse.urlparse(uri)
     if p.fragment:
         return False                       # RFC 6749 §3.1.2 forbids a fragment
+    if "@" in (p.netloc or ""):
+        return False                       # userinfo: "https://chatgpt.com@evil.example/cb"
     if p.scheme == "https" and p.hostname:
         return True
     if _is_loopback(p):
@@ -293,6 +304,22 @@ def _public_https_get(parsed):
     if parsed.query:
         path += "?" + parsed.query
     conn = _PinnedHTTPS(host, ip, port, CIMD_TIMEOUT, ssl.create_default_context())
+
+    def _expire():
+        # Shutting the socket down from another thread wakes a blocked recv, so the fetch
+        # ends at the deadline however slowly the far end sends.
+        sock = getattr(conn, "sock", None)
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+    if not _CIMD_SLOTS.acquire(blocking=False):
+        raise OAuthError("invalid_client",
+                         "the client_id document could not be fetched right now; retry shortly")
+    watchdog = threading.Timer(CIMD_DEADLINE, _expire)
+    watchdog.daemon = True
+    watchdog.start()
     try:
         conn.request("GET", path, headers={"Accept": "application/json",
                                            "User-Agent": "stratify-mcp-oauth/1"})
@@ -310,7 +337,9 @@ def _public_https_get(parsed):
         raise OAuthError("invalid_client",
                          "the client_id document could not be fetched") from exc
     finally:
+        watchdog.cancel()
         conn.close()
+        _CIMD_SLOTS.release()
     if len(raw) > CIMD_MAX_BYTES:
         raise OAuthError("invalid_client", "the client_id document is too large")
     return raw
@@ -326,7 +355,7 @@ def _fetch_cimd(client_id):
     publish a document redirecting to somebody else's callback.
     """
     parsed = urllib.parse.urlparse(client_id)
-    if parsed.scheme != "https" or not parsed.hostname:
+    if parsed.scheme != "https" or not parsed.hostname or "@" in parsed.netloc:
         raise OAuthError("invalid_client", "a CIMD client_id must be an https URL")
     raw = _public_https_get(parsed)
     try:
@@ -365,7 +394,14 @@ def resolve_client(client_id):
     if not client_id:
         raise OAuthError("invalid_client", "client_id is required")
     if client_id.startswith("https://"):
-        return _fetch_cimd(client_id)
+        hit = _CIMD_CACHE.get(client_id)
+        if hit and hit[0] > time.time():
+            return dict(hit[1])
+        doc = _fetch_cimd(client_id)
+        if len(_CIMD_CACHE) > 256:
+            _CIMD_CACHE.clear()
+        _CIMD_CACHE[client_id] = (time.time() + CIMD_CACHE_SECONDS, dict(doc))
+        return doc
     row = store.oauth_client(client_id)
     if row is None:
         raise OAuthError("invalid_client", f"unknown client_id {client_id!r}")
@@ -508,7 +544,12 @@ def refresh(form):
     if client["client_id"] != row["client_id"]:
         raise OAuthError("invalid_grant", "this token was issued to a different client")
     _authenticate_client(client, form.get("client_secret"))
-    store.rotate_oauth_refresh(token)
+    if not store.rotate_oauth_refresh(token):
+        # Lost a race with a concurrent refresh of the same token: same treatment as reuse.
+        store.revoke_oauth_family(row["family_id"])
+        raise OAuthError("invalid_grant",
+                         "this refresh token has already been rotated; the grant has "
+                         "been revoked. Ask the user to reconnect.")
     return _mint(row["client_id"], row["account_id"], row["scope"], row["family_id"])
 
 
