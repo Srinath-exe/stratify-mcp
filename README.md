@@ -104,8 +104,8 @@ paste your key once.
 
 | | Free | Paid |
 |---|---|---|
-| **NIFTY** options, 1-minute | 1 Jul 2025 – 30 Jun 2026 | 1 Jan 2019 – 30 Jun 2026 |
-| **SENSEX** options, 1-minute | 1 Jul 2025 – 30 Jun 2026 | 7 Aug 2023 – 30 Jun 2026 |
+| **NIFTY** options, 1-minute | 1 Nov 2021 – 31 Oct 2026 | 1 Jan 2019 – 31 Oct 2026 |
+| **SENSEX** options, 1-minute | 1 Nov 2025 – 31 Oct 2026 | 7 Aug 2023 – 31 Oct 2026 |
 | Strategy features | every one | every one |
 
 SENSEX options do not exist in the archive before 7 Aug 2023, so no tier claims earlier
@@ -219,7 +219,7 @@ open without auth   initialize, tools/list, describe_coverage, explain_methodolo
 needs auth          run_backtest, build_report, list_backtests, get_backtest, list_strategies, submit_feedback, my_feedback
 unauthenticated tools/call → HTTP 401 + WWW-Authenticate (never a 200 wrapping an error)
 stdio bridge    npx stratify-mcp        python client   pip install stratify-mcp
-market          NIFTY (NSE) and SENSEX (BSE) index options, India; 1-minute; free tier = one year of both
+market          NIFTY (NSE) and SENSEX (BSE) index options, India; 1-minute; free tier = five years of NIFTY, one year of SENSEX
 limits (free)   100 backtests/hour, 1,000 other calls/hour, per account
 data egress     none — results only, never rows
 ```
