@@ -1,53 +1,40 @@
-<p align="center">
-  <a href="https://stratify.aeon-labs.site"><img src="https://stratify.aeon-labs.site/static/icon-192.png" width="96" alt="Stratify"></a>
-</p>
-
-<h1 align="center">Stratify</h1>
-
-<p align="center">
-  <strong>Describe an options strategy in plain words. Get it backtested on real 1-minute NIFTY and SENSEX option data — with an honest answer about how much to trust the result.</strong>
-</p>
+<a href="https://stratify.aeon-labs.site">
+<picture>
+  <source media="(max-width: 600px)" srcset=".github/readme/stratify-phone.webp">
+  <img src=".github/readme/stratify.webp" width="100%" alt="Stratify MCP: a question typed into ChatGPT, the backtest running day by day, and the result after charges.">
+</picture>
+</a>
 
 <p align="center">
-  <a href="https://stratify.aeon-labs.site">Website</a> ·
-  <a href="https://stratify.aeon-labs.site/docs">Docs</a> ·
-  <a href="https://stratify.aeon-labs.site/explore">What it can do</a> ·
-  <a href="https://registry.modelcontextprotocol.io/v0.1/servers?search=site.aeon-labs/stratify">MCP Registry</a> ·
-  <a href="https://stratify.aeon-labs.site/contact">Contact</a>
+  <a href="https://stratify.aeon-labs.site"><img src=".github/readme/pill-site.webp" height="42" alt="Try it free"></a>&nbsp;
+  <a href="https://stratify.aeon-labs.site/docs"><img src=".github/readme/pill-docs.webp" height="42" alt="Docs"></a>
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/stratify-mcp"><img src="https://img.shields.io/npm/v/stratify-mcp?label=npm&color=8DDD8D" alt="npm"></a>
-  <a href="https://pypi.org/project/stratify-mcp/"><img src="https://img.shields.io/pypi/v/stratify-mcp?label=PyPI&color=8DDD8D" alt="PyPI"></a>
+  <a href="https://www.npmjs.com/package/stratify-mcp"><img src="https://img.shields.io/npm/v/stratify-mcp?label=npm&color=1f7a45" alt="npm"></a>
+  <a href="https://pypi.org/project/stratify-mcp/"><img src="https://img.shields.io/pypi/v/stratify-mcp?label=PyPI&color=1f7a45" alt="PyPI"></a>
   <a href="https://github.com/Srinath-exe/stratify-mcp/actions/workflows/ci.yml"><img src="https://github.com/Srinath-exe/stratify-mcp/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8DDD8D" alt="MIT"></a>
-  <img src="https://img.shields.io/badge/MCP-streamable--http%20%2B%20OAuth%202.1-6066EE" alt="MCP">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1f7a45" alt="MIT"></a>
+  <a href="https://registry.modelcontextprotocol.io/v0.1/servers?search=site.aeon-labs/stratify"><img src="https://img.shields.io/badge/MCP%20Registry-listed-1f7a45" alt="MCP Registry"></a>
 </p>
 
----
-
-Stratify is an [MCP](https://modelcontextprotocol.io) server. You connect it to the chat
-assistant you already use — ChatGPT, Claude, Gemini, Claude Code, Codex, Gemini CLI,
-OpenCode — and say things like:
+Describe an options strategy in plain words, in the assistant you already use. Stratify runs it against every trading day on real one-minute NIFTY and SENSEX option prices, and gives you the result after every charge, with **an honest answer about how far to trust it**.
 
 > *Sell a 20-delta NIFTY strangle every Thursday at 09:30, stop out at 2× the credit, take
 > profit at 60%. Did it hold up out of sample?*
 
-The assistant turns that into a strategy, Stratify runs it against every trading day in the
-window on real option prints, and you get back P&L after real charges, return on margin, a
-shareable report page — and an **honesty panel** that says whether the result survived the
-data it was not fitted on.
+It is an [MCP](https://modelcontextprotocol.io) server, so it works in ChatGPT, Claude, Gemini, Claude Code, Codex, Gemini CLI, OpenCode and anything else that speaks MCP. This repository is the code behind the hosted service at **[stratify.aeon-labs.site](https://stratify.aeon-labs.site)**, published so you can read exactly how every number was produced. The service holds 372 million one-minute option bars, about 289 million for NIFTY and 83 million for SENSEX. The market data is not here and never leaves the service: you send a strategy, you get results.
 
-This repository is the server behind the hosted service at
-**[stratify.aeon-labs.site](https://stratify.aeon-labs.site)**, published so you can read
-exactly how every number you are shown was produced. The backtest runs on that server, not
-inside your assistant, against 372 million one-minute option bars: about 289 million for
-NIFTY and 83 million for SENSEX. The market data is not here and never leaves the service:
-you send a strategy, you get results.
+<picture>
+  <source media="(max-width: 600px)" srcset=".github/readme/honesty-phone.webp">
+  <img src=".github/readme/honesty.webp" width="100%" alt="What the evidence supports, for one real run: sample size 25 of 25, out of sample 0 of 25, walk forward 13 of 20, cost sensitivity 8 of 15, multiple testing 13 of 15; mixed, 59 of 100. Beside it, the same one-year backtest after each change to how data is read: 2.66, 0.725, 0.367, 0.236 and 0.208 seconds.">
+</picture>
+
+<sub>Speeds are engine time, measured in August 2026 on the 8-core server, one request at a time. A whole answer takes longer: the run in the film above took 6.7 seconds.</sub>
 
 ## Connect in one minute
 
-**No key needed** — these clients sign you in with Google when you add the URL:
+**No key needed**: these clients sign you in with Google when you add the URL:
 
 | Client | Where | Paste |
 |---|---|---|
@@ -55,14 +42,16 @@ you send a strategy, you get results.
 | **Claude** (claude.ai / Desktop) | Settings → Connectors → *Add custom connector* | `https://stratify-mcp.aeon-labs.site/mcp` |
 | **Gemini** (web / mobile) | Settings → Connected apps → *custom app* | `https://stratify-mcp.aeon-labs.site/mcp` |
 
-**With an API key** — sign in at [stratify.aeon-labs.site](https://stratify.aeon-labs.site),
-make a key (`sk_live_…`), then:
+**With an API key**: sign in at [stratify.aeon-labs.site](https://stratify.aeon-labs.site), make a key (`sk_live_…`), then:
 
 ```bash
 # Claude Code
 claude mcp add --transport http stratify https://stratify-mcp.aeon-labs.site/mcp \
   --header "Authorization: Bearer sk_live_..."
 ```
+
+<details>
+<summary>Codex, Gemini CLI, OpenCode, stdio, Python and Claude Desktop</summary>
 
 ```toml
 # Codex  (~/.codex/config.toml)
@@ -99,6 +88,8 @@ result = StratifyClient(api_key="sk_live_...").run_backtest({...})   # returns p
 **Claude Desktop extension:** download `stratify-<version>.mcpb` from the
 [latest release](https://github.com/Srinath-exe/stratify-mcp/releases/latest), double-click,
 paste your key once.
+
+</details>
 
 ## What it covers
 
@@ -168,6 +159,9 @@ This exact spec parses and runs:
 }
 ```
 
+<details>
+<summary>The whole vocabulary</summary>
+
 | Vocabulary | |
 |---|---|
 | Strike selection | `delta_near`, `premium_near`, `pct_offset`, `points_offset`, `atm`, `strike`, `from_leg` |
@@ -176,6 +170,8 @@ This exact spec parses and runs:
 | Position conditions | `pnl_frac_of_credit` (0.6 = 60% of the credit), `pnl_frac_of_max`, `credit_kept_frac`, `leg_mark_mult`, `combined_premium`, `drawdown_from_peak`, days/minutes to expiry, clock time |
 | Actions | `close`, `close_legs`, `open`, `roll`, `close_and_open` |
 | Portfolio | `stop_after_losses`, `stop_after_drawdown_pct`, `skip_after_loss`, `max_trades`, `stop_after_profit_pct`, `resume_after_days` |
+
+</details>
 
 Every gate reads data from *before* the entry moment — the SQL window frames and the
 indicator series are built so that lookahead is structurally impossible, not merely
@@ -215,8 +211,8 @@ auth            OAuth 2.1 (PKCE S256, dynamic client registration, CIMD)
                 or  Authorization: Bearer sk_live_...
 discovery       https://stratify-mcp.aeon-labs.site/.well-known/oauth-protected-resource/mcp
 issuer          https://stratify.aeon-labs.site
-open without auth   initialize, tools/list, describe_coverage, explain_methodology, search, fetch
-needs auth          run_backtest, build_report, list_backtests, get_backtest, list_strategies, submit_feedback, my_feedback
+open without auth   initialize, tools/list, resources/list, resources/read
+needs auth          every tools/call
 unauthenticated tools/call → HTTP 401 + WWW-Authenticate (never a 200 wrapping an error)
 stdio bridge    npx stratify-mcp        python client   pip install stratify-mcp
 market          NIFTY (NSE) and SENSEX (BSE) index options, India; 1-minute; free tier = five years of NIFTY, one year of SENSEX
@@ -269,7 +265,7 @@ the tests that need one and says so.
 
 ```bash
 pip install -r requirements-dev.txt
-python3 -m pytest engine/tests server/tests -q -rs   # 766 tests; 210 skip without the database
+python3 -m pytest engine/tests server/tests -q -rs   # without a database: 497 pass, 230 skip (CI, 24 Nov 2026)
 cp .env.example .env                                  # then fill it in
 ./server/run.sh
 ```
@@ -307,4 +303,5 @@ MIT — see [LICENSE](LICENSE). `server/vendor/lightweight-charts.js` is Trading
 Lightweight Charts™, Apache 2.0, redistributed with its licence header intact.
 
 Backtests are historical simulation, not advice. Nothing here is a recommendation to trade.
-Built and run by [Srinath H](https://github.com/Srinath-exe).
+
+Built and run by [Srinath H](https://github.com/Srinath-exe). The other one: [OpenATC](https://github.com/Srinath-exe/OpenSkyATC).
