@@ -23,14 +23,14 @@ Describe an options strategy in plain words, in the assistant you already use. S
 > *Sell a 20-delta NIFTY strangle every Thursday at 09:30, stop out at 2× the credit, take
 > profit at 60%. Did it hold up out of sample?*
 
-It is an [MCP](https://modelcontextprotocol.io) server, so it works in ChatGPT, Claude, Gemini, Claude Code, Codex, Gemini CLI, OpenCode and anything else that speaks MCP. This repository is the code behind the hosted service at **[stratify.aeon-labs.site](https://stratify.aeon-labs.site)**, published so you can read exactly how every number was produced. The service holds 372 million one-minute option bars, about 289 million for NIFTY and 83 million for SENSEX. The market data is not here and never leaves the service: you send a strategy, you get results.
+It is an [MCP](https://modelcontextprotocol.io) server, so it works in ChatGPT, Claude, Gemini, Claude Code, Codex, Gemini CLI, OpenCode and anything else that speaks MCP. This repository is the code behind the hosted service at **[stratify.aeon-labs.site](https://stratify.aeon-labs.site)**, published so you can read exactly how every number was produced. The service holds **392 million one-minute option bars**: 308 million for NIFTY and 85 million for SENSEX. The market data is not here and never leaves the service: you send a strategy, you get results.
 
 <picture>
   <source media="(max-width: 600px)" srcset=".github/readme/honesty-phone.webp">
-  <img src=".github/readme/honesty.webp" width="100%" alt="What the evidence supports, for one real run: sample size 25 of 25, out of sample 0 of 25, walk forward 13 of 20, cost sensitivity 8 of 15, multiple testing 13 of 15; mixed, 59 of 100. Beside it, the same one-year backtest after each change to how data is read: 2.66, 0.725, 0.367, 0.236 and 0.208 seconds.">
+  <img src=".github/readme/honesty.webp" width="100%" alt="What the evidence supports, for one real run: sample size 25 of 25, out of sample 0 of 25, walk forward 13 of 20, cost sensitivity 8 of 15, multiple testing 13 of 15; mixed, 59 of 100. Beside it, five-year backtests before and after November's engine: a straddle that rolls 143.7 to 16.1 seconds, a straddle with a stop on each leg 59.2 to 7.2, an iron condor with targets 32.4 to 6.2, one call for 30 minutes 26.9 to 5.3.">
 </picture>
 
-<sub>Speeds are engine time, measured in August 2026 on the 8-core server, one request at a time. A whole answer takes longer: the run in the film above took 6.7 seconds.</sub>
+<sub>Measured in November 2026 on the 8-core server. Presets are quicker: a five-year weekly strangle with a 2× stop (259 trades) takes 0.85 seconds, the median of 22 runs with caching off. That is engine time; the run in the film above took 6.7 seconds end to end.</sub>
 
 ## Connect in one minute
 
@@ -93,6 +93,11 @@ paste your key once.
 
 ## What it covers
 
+<picture>
+  <source media="(max-width: 600px)" srcset=".github/readme/coverage-phone.webp">
+  <img src=".github/readme/coverage.webp" width="100%" alt="392,591,142 one-minute option bars, month by month. NIFTY from January 2019 to October 2026, free from November 2021. SENSEX from August 2023 to October 2026, free from November 2025; no SENSEX data before August 2023.">
+</picture>
+
 | | Free | Paid |
 |---|---|---|
 | **NIFTY** options, 1-minute | 1 Nov 2021 – 31 Oct 2026 | 1 Jan 2019 – 31 Oct 2026 |
@@ -109,8 +114,16 @@ only for now. SENSEX is served through the preset structures (`short_strangle`,
 `iron_condor`, `iron_fly`, `credit_spread`, `long_option`), because the open form's entry
 gates read a daily market-state table that exists only in NIFTY's database so far.
 
-Free tier limits: 100 backtests an hour and 1,000 other calls an hour, per account. The
-windows are a property of the tier (`engine/spec.py`, `TIER_WINDOWS`), enforced twice: by
+Free tier limits, per account: up to 100 backtests and 1,000 other calls an hour, two
+backtests at once, and 60 CPU-seconds an hour, which a run of heavy five-year custom
+strategies reaches first. When the service is busy a backtest waits its turn for up to
+20 seconds instead of being refused.
+
+With everyone asking for five years and nobody pausing, twenty people get 51 backtests a
+minute between them, none failing (24 Nov 2026). The serving data fits in memory, so the
+ceiling is CPU.
+
+The windows are a property of the tier (`engine/spec.py`, `TIER_WINDOWS`), enforced twice: by
 the spec validator and by a ClickHouse row policy (`data/schema/70_tiers.sql`,
 `71_tiers_symbol.sql`), so a bug in one cannot widen what a free key can read.
 
@@ -216,7 +229,7 @@ needs auth          every tools/call
 unauthenticated tools/call → HTTP 401 + WWW-Authenticate (never a 200 wrapping an error)
 stdio bridge    npx stratify-mcp        python client   pip install stratify-mcp
 market          NIFTY (NSE) and SENSEX (BSE) index options, India; 1-minute; free tier = five years of NIFTY, one year of SENSEX
-limits (free)   100 backtests/hour, 1,000 other calls/hour, per account
+limits (free)   up to 100 backtests/hour (60 CPU-seconds/hour), 1,000 other calls/hour, per account
 data egress     none — results only, never rows
 ```
 
@@ -240,9 +253,15 @@ the parts that most often hide a lie:
   methodology version that produced it, so a number you recorded last month is
   attributable when the model improves.
 
-The data is a licensed, cleaned, multi-year tick archive. It is the one thing this
+The data is a licensed, cleaned, multi-year archive of one-minute bars. It is the one thing this
 repository does not contain and cannot fetch; there is no route that returns rows, and a
 test asserts there never will be.
+
+## Read more
+
+- [Backtesting 392 million option bars your AI never sees](https://stratify.aeon-labs.site/guides/backtesting-372-million-option-bars-compute-to-data-mcp-server): the architecture, in thirteen pictures
+- [How to backtest options strategies with AI](https://stratify.aeon-labs.site/guides/how-to-backtest-options-strategies-with-ai): setup, prompts, and ten strategies over five years
+- [Where ChatGPT's backtest answer comes from](https://stratify.aeon-labs.site/guides/chatgpt-options-backtest-where-the-answer-comes-from): why the engine runs on a server and the AI only writes the spec
 
 ## Layout
 
